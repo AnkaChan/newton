@@ -78,8 +78,9 @@ def dat_plane_offset(
     slowest approaching vertex on each side can take the same fraction of its
     remaining displacement before touching it. With one approaching vertex per
     side this is the proportional split of the DAT paper. Sides that do not
-    approach get no room reserved. The thickness margin is reduced to half the
-    current gap when the pair is already closer than ``2 * margin``.
+    approach get no room reserved. Each side keeps at least ``eps`` (the DAT
+    separation band) and at most half the current gap, so the thickness margin
+    shrinks for pairs already closer than ``2 * margin``.
 
     Returns ``(plane_point, room, margin_eff)``: a point on the plane, the
     balanced fraction (``_DAT_INFINITE_ROOM`` when nobody approaches), and the
@@ -93,7 +94,9 @@ def dat_plane_offset(
     for j in range(positive_count):
         positive_min = wp.min(positive_min, wp.dot(n, positive_pos[j] - origin))
     gap = positive_min - negative_max
-    margin_eff = wp.min(margin, wp.max(0.0, 0.5 * gap * (1.0 - eps)))
+    # reserve at least the separation band on each side (never place the plane on a
+    # primitive); fall back to the midpoint when the pair is thinner than the band
+    margin_eff = wp.min(wp.max(margin, eps), wp.max(0.0, 0.5 * gap))
     b_lo = negative_max + margin_eff
     b_hi = positive_min - margin_eff
 

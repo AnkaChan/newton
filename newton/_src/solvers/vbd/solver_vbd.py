@@ -42,6 +42,12 @@ from .particle_alm_kernels import (
     reset_particle_elasticity_alm,
     update_particle_elasticity_alm,
 )
+from .particle_dat_kernels import (
+    build_contact_planes,
+    commit_truncated_displacement,
+    create_particle_contact_dat_planes,
+    truncate_against_contact_planes,
+)
 from .particle_vbd_kernels import (
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     # Topological filtering helper functions
@@ -331,6 +337,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_elasticity_alm: bool = False,
         particle_elasticity_alm_deviatoric: bool = True,
         particle_elasticity_alm_rho_scale: float = 1.0,
+        particle_self_contact_method: str = "penalty_dat",
+        particle_dat_plane_update_interval: int = 1,
+        particle_dat_truncation_iterations: int = 2,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -453,6 +462,28 @@ class SolverVBD(SolverBase, CouplingInterface):
                 Defaults to ``1.0``. The metric is independent of material stiffness;
                 this scale changes convergence but not converged material stiffness.
                 Only used when ``particle_elasticity_alm=True``.
+            particle_self_contact_method: Experimental selector for the soft self-contact
+                scheme. ``"penalty_dat"`` (default) keeps the existing penalty contact
+                force with per-color Divide-and-Truncate. ``"alm_dat"`` stores one
+                division plane per detected pair at a certified anchor pose, lets the
+                VBD iterate penetrate, and truncates the accumulated motion against
+                the stored planes at a fixed cadence and once more at the end of the
+                step; the committed state is penetration-free for every stored pair.
+                Requires ``particle_enable_self_contact=True``, one soft self-contact
+                detection per step (``PRE_INIT``), and is incompatible with
+                ``rigid_soft_enable_dat``.
+
+                .. experimental::
+                    ``particle_self_contact_method``, ``particle_dat_plane_update_interval``,
+                    and ``particle_dat_truncation_iterations`` may change without the
+                    normal deprecation period.
+
+            particle_dat_plane_update_interval: With ``"alm_dat"``, truncate and rebuild
+                the stored planes after every this many VBD iterations (``0`` disables
+                the in-iteration refresh). Defaults to ``1``.
+            particle_dat_truncation_iterations: With ``"alm_dat"``, number of
+                truncate-and-rebuild rounds applied to the final iterate before the
+                step commits. Defaults to ``2``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -810,6 +841,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         # resolution) reads them as soon as the base class is constructed.
         self.particle_enable_self_contact = particle_enable_self_contact
         self.rigid_soft_enable_dat = rigid_soft_enable_dat
+        if particle_self_contact_method not in ("penalty_dat", "alm_dat"):
+            raise ValueError(
+                f"particle_self_contact_method must be 'penalty_dat' or 'alm_dat', got {particle_self_contact_method!r}"
+            )
+        self.particle_self_contact_method = particle_self_contact_method
+        self._alm_dat = particle_self_contact_method == "alm_dat"
 
         # With an owned pipeline, seed its self-contact configuration from the solver's
         # parameters before the base class allocates the owned Contacts buffer.
@@ -901,6 +938,23 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._integrates_rigid_bodies = integrates_rigid_bodies
 
         # Initialize particle system
+        if self._alm_dat and not particle_enable_self_contact:
+            raise ValueError("particle_self_contact_method='alm_dat' requires particle_enable_self_contact=True")
+        if self._alm_dat and rigid_soft_enable_dat:
+            raise ValueError(
+                "particle_self_contact_method='alm_dat' is not yet supported together with rigid_soft_enable_dat"
+            )
+        if particle_dat_plane_update_interval < 0 or particle_dat_truncation_iterations < 0:
+            raise ValueError(
+                "particle_dat_plane_update_interval and particle_dat_truncation_iterations must be nonnegative"
+            )
+        self.particle_dat_plane_update_interval = int(particle_dat_plane_update_interval)
+        self.particle_dat_truncation_iterations = int(particle_dat_truncation_iterations)
+        # thickness reserved on each side of a stored plane; the certificate is "no crossing"
+        self._dat_margin = 0.0
+        self._dat_planes = None
+        self._dat_anchor = None
+        self._alm_dat_iteration = 0
         self.particle_elasticity_alm = bool(particle_elasticity_alm)
         self._particle_elasticity_alm_state = create_particle_elasticity_alm_state(
             model, self.particle_elasticity_alm, particle_elasticity_alm_deviatoric, particle_elasticity_alm_rho_scale
@@ -1032,7 +1086,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                     topological_contact_filter_threshold=particle_topological_contact_filter_threshold,
                     external_vertex_triangle_filtering_map=particle_external_vertex_contact_filtering_map,
                     external_edge_edge_filtering_map=particle_external_edge_contact_filtering_map,
+                    sort_contact_rows=self._alm_dat,
                 )
+            if self._alm_dat:
+                self._dat_anchor = wp.zeros_like(model.particle_q, device=self.device)
 
             # the device-side struct copy and the launch size are derived caches
             # over the result struct; the accessor builds and heals them
@@ -1131,6 +1188,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             # array at run time, so its identity can stay stable
             wp.copy(self.trimesh_collision_info, snapshot)
         self._update_self_contact_launch_size(info)
+        if self._alm_dat:
+            # plane storage is indexed by row slot, so it follows the row capacity
+            self._dat_planes = create_particle_contact_dat_planes(info, self.device)
         self._self_contact_info_source = info
         self._self_contact_storage_generation = generation
         return info
@@ -3221,7 +3281,74 @@ class SolverVBD(SolverBase, CouplingInterface):
             device=self.device,
         )
 
-        self._penetration_free_truncation(state_in, contacts)
+        if self._alm_dat:
+            self._alm_dat_initialize(state_in)
+        else:
+            self._penetration_free_truncation(state_in, contacts)
+
+    def _alm_dat_budget(self) -> float:
+        """Largest committed displacement from the detection pose (half the detection slack)."""
+        return self._self_contact_query_radius * self.dat_conservative_bound_relaxation * 0.5
+
+    def _alm_dat_materialize_trial(self, state: State) -> None:
+        """Write the untruncated iterate ``x_start + displacement`` into ``state.particle_q``."""
+        self.truncation_ts.fill_(1.0)
+        wp.launch(
+            kernel=apply_truncation_ts,
+            dim=self.model.particle_count,
+            inputs=[self.pos_prev_collision_detection, self.particle_displacements, self.truncation_ts, wp.inf],
+            outputs=[self.particle_displacements, state.particle_q],
+            device=self.device,
+        )
+
+    def _alm_dat_truncate(self, trial: wp.array, *, refresh_normals: bool) -> None:
+        """Advance the certified anchor toward ``trial`` and rebuild the stored planes there."""
+        launch_size = self.particle_self_contact_evaluation_kernel_launch_size
+        truncate_against_contact_planes(
+            self.model,
+            self._dat_anchor,
+            trial,
+            self.trimesh_collision_info,
+            self._dat_planes,
+            gamma=self.dat_conservative_bound_relaxation,
+            sigma=self.truncation_ts,
+            launch_size=launch_size,
+        )
+        commit_truncated_displacement(
+            self.pos_prev_collision_detection,
+            self._dat_anchor,
+            trial,
+            self.truncation_ts,
+            budget=self._alm_dat_budget(),
+            anchor_out=self._dat_anchor,
+        )
+        build_contact_planes(
+            self.model,
+            self._dat_anchor,
+            trial,
+            self.trimesh_collision_info,
+            self._dat_planes,
+            margin=self._dat_margin,
+            refresh_normals=refresh_normals,
+            launch_size=launch_size,
+        )
+
+    def _alm_dat_initialize(self, state_in: State) -> None:
+        """Start the step's certified anchor at the detection pose and truncate the inertial target."""
+        self._alm_dat_iteration = 0
+        self._dat_anchor.assign(self.pos_prev_collision_detection)
+        self._alm_dat_materialize_trial(state_in)
+        build_contact_planes(
+            self.model,
+            self._dat_anchor,
+            state_in.particle_q,
+            self.trimesh_collision_info,
+            self._dat_planes,
+            margin=self._dat_margin,
+            refresh_normals=True,
+            launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
+        )
+        self._alm_dat_truncate(state_in.particle_q, refresh_normals=True)
 
     def _refresh_rigid_contact_state(
         self, contacts: Contacts | None, refresh: bool, *, restore_history: bool = False
@@ -3915,9 +4042,17 @@ class SolverVBD(SolverBase, CouplingInterface):
                     ],
                     device=self.device,
                 )
-            self._penetration_free_truncation(state_in, contacts)
+            if self._alm_dat:
+                self._alm_dat_materialize_trial(state_in)
+            else:
+                self._penetration_free_truncation(state_in, contacts)
 
         update_particle_elasticity_alm(model, state_in.particle_q, self._particle_elasticity_alm_state)
+        if self._alm_dat:
+            self._alm_dat_iteration += 1
+            interval = self.particle_dat_plane_update_interval
+            if interval > 0 and self._alm_dat_iteration % interval == 0:
+                self._alm_dat_truncate(state_in.particle_q, refresh_normals=True)
         wp.copy(state_out.particle_q, state_in.particle_q)
 
     def _solve_rigid_body_iteration(
@@ -4413,6 +4548,13 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self.model.particle_count == 0:
             return
 
+        if self._alm_dat:
+            # final truncation rounds against the stored planes; the committed
+            # state is the certified anchor, never the raw iterate
+            for _ in range(self.particle_dat_truncation_iterations):
+                self._alm_dat_truncate(state_out.particle_q, refresh_normals=True)
+            state_out.particle_q.assign(self._dat_anchor)
+
         wp.launch(
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
@@ -4484,6 +4626,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         """
         Frequency = SolverBase.CollisionFrequencyType
         if slot == SolverBase.CollisionSlot.SOFT_SELF_CONTACT and self.particle_enable_self_contact:
+            if self._alm_dat:
+                # stored planes need one certified detection per step; a post-init or
+                # in-iteration detection would reset the motion reference at the trial pose
+                return Frequency.PRE_INIT
             interval = self._deprecated_particle_interval
             if interval is None or interval == 0:
                 return Frequency.PRE_POST_INIT
@@ -4601,6 +4747,11 @@ class SolverVBD(SolverBase, CouplingInterface):
             raise ValueError(
                 "particle_enable_self_contact requires an active soft self-collision schedule: "
                 "set the SOFT_SELF_CONTACT slot to PRE_INIT, PRE_POST_INIT, or ITERATIONS, not NONE."
+            )
+        if self._alm_dat and self._self_contact_mode_this_step != Frequency.PRE_INIT:
+            raise ValueError(
+                "particle_self_contact_method='alm_dat' requires one soft self-contact detection per step: "
+                "set the SOFT_SELF_CONTACT slot to PRE_INIT."
             )
         schedules_match = self._rigid_mode_this_step == self._self_contact_mode_this_step and (
             self._rigid_mode_this_step != Frequency.ITERATIONS
