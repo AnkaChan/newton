@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry.kernels import triangle_closest_point
 from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
 from .rigid_vbd_kernels import (
     dat_separation_epsilon,
@@ -516,3 +517,450 @@ def commit_truncated_displacement(
         outputs=[anchor_out],
         device=anchor.device,
     )
+
+
+# ---------------------------------------------------------------------------
+# Slack-gap ALM contact row
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def alm_contact_row(gap: float, lam: float, stiffness: float, radius: float, rho: float):
+    """Evaluate the cushion-plus-wall contact row for one pair.
+
+    ``gap`` is the signed witness gap along the plane normal (negative past the
+    plane), ``lam`` the stored compressive multiplier, ``stiffness`` the cushion
+    stiffness ``K``, ``radius`` the cushion width ``R`` and ``rho`` the ALM
+    metric. A slack ``z >= 0`` carries the cushion energy ``K/2 max(R - z, 0)^2``
+    and ``z = gap`` is enforced by ALM; the slack solve is closed form and
+    selects one of three regimes:
+
+    - released (``gap - lam/rho >= R``): no force, no stiffness;
+    - cushion (``0 < z``): force ``s lam + k_eff (R - gap)`` with
+      ``s = K/(K + rho)``, ``k_eff = K rho/(K + rho)``;
+    - hard wall (``z`` pinned at zero): force ``lam - rho gap``, stiffness ``rho``.
+
+    The force is continuous across the regime switch. Returns
+    ``(transmitted_force, gap_stiffness)``; the force is nonnegative and the
+    multiplier update is ``lam <- transmitted_force`` evaluated at the trial pose.
+    """
+    if rho <= 0.0:
+        return float(0.0), float(0.0)
+    z_free = gap - lam / rho
+    if z_free >= radius:
+        return float(0.0), float(0.0)
+    z0 = (stiffness * radius - lam + rho * gap) / (stiffness + rho)
+    if z0 >= 0.0:
+        s = stiffness / (stiffness + rho)
+        k_eff = stiffness * rho / (stiffness + rho)
+        return wp.max(s * lam + k_eff * (radius - gap), 0.0), k_eff
+    return wp.max(lam - rho * gap, 0.0), rho
+
+
+@wp.struct
+class ParticleContactAlmState:
+    """Per-slot contact multipliers plus last step's sorted rows for matching.
+
+    ``vt_lambda`` / ``ee_lambda`` follow the detector's row capacity. The
+    ``prev_*`` arrays hold the previous step's CSR offsets, counterpart indices
+    (sorted ascending within each row) and multipliers; matching merges them
+    with the current sorted rows element by element.
+    """
+
+    vt_lambda: wp.array[float]
+    ee_lambda: wp.array[float]
+    prev_vt_offsets: wp.array[wp.int32]
+    prev_vt_counterpart: wp.array[wp.int32]
+    prev_vt_lambda: wp.array[float]
+    prev_ee_offsets: wp.array[wp.int32]
+    prev_ee_counterpart: wp.array[wp.int32]
+    prev_ee_lambda: wp.array[float]
+
+
+def create_particle_contact_alm_state(model, collision_info: TriMeshCollisionInfo, device) -> ParticleContactAlmState:
+    """Allocate contact multipliers and matching history for ``collision_info``'s capacities."""
+    vt_capacity = max(collision_info.vertex_colliding_triangles.shape[0] // 2, 1)
+    ee_capacity = max(collision_info.edge_colliding_edges.shape[0] // 2, 1)
+    state = ParticleContactAlmState()
+    state.vt_lambda = wp.zeros(vt_capacity, dtype=float, device=device)
+    state.ee_lambda = wp.zeros(ee_capacity, dtype=float, device=device)
+    state.prev_vt_offsets = wp.zeros(model.particle_count + 1, dtype=wp.int32, device=device)
+    state.prev_vt_counterpart = wp.zeros(vt_capacity, dtype=wp.int32, device=device)
+    state.prev_vt_lambda = wp.zeros(vt_capacity, dtype=float, device=device)
+    state.prev_ee_offsets = wp.zeros(max(model.edge_count, 0) + 1, dtype=wp.int32, device=device)
+    state.prev_ee_counterpart = wp.zeros(ee_capacity, dtype=wp.int32, device=device)
+    state.prev_ee_lambda = wp.zeros(ee_capacity, dtype=float, device=device)
+    return state
+
+
+@wp.func
+def _vertex_triangle_row_geometry(
+    v: int,
+    tri: int,
+    pos: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    tri_indices: wp.array2d[wp.int32],
+    n: wp.vec3,
+    dt: float,
+):
+    """Witness gap along ``n``, barycentric weights, and the row's inertia metric."""
+    a = pos[tri_indices[tri, 0]]
+    b = pos[tri_indices[tri, 1]]
+    c = pos[tri_indices[tri, 2]]
+    _closest, bary, _feature = triangle_closest_point(a, b, c, pos[v])
+    witness = bary[0] * a + bary[1] * b + bary[2] * c
+    gap = wp.dot(n, pos[v] - witness)
+    mobility = inv_mass[v]
+    for k in range(3):
+        mobility += bary[k] * bary[k] * inv_mass[tri_indices[tri, k]]
+    rho = float(0.0)
+    if mobility > 0.0:
+        rho = 1.0 / (dt * dt * mobility)
+    return gap, bary, rho
+
+
+@wp.func
+def _edge_edge_row_geometry(
+    e1: int,
+    e2: int,
+    pos: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    edge_indices: wp.array2d[wp.int32],
+    n: wp.vec3,
+    dt: float,
+    parallel_eps: float,
+):
+    """Witness gap along ``n`` (e1 positive), the (s, t) weights, and the inertia metric."""
+    e1_a = pos[edge_indices[e1, 2]]
+    e1_b = pos[edge_indices[e1, 3]]
+    e2_a = pos[edge_indices[e2, 2]]
+    e2_b = pos[edge_indices[e2, 3]]
+    st = wp.closest_point_edge_edge(e1_a, e1_b, e2_a, e2_b, parallel_eps)
+    s = st[0]
+    t = st[1]
+    c1 = e1_a + (e1_b - e1_a) * s
+    c2 = e2_a + (e2_b - e2_a) * t
+    gap = wp.dot(n, c1 - c2)
+    mobility = (
+        (1.0 - s) * (1.0 - s) * inv_mass[edge_indices[e1, 2]]
+        + s * s * inv_mass[edge_indices[e1, 3]]
+        + (1.0 - t) * (1.0 - t) * inv_mass[edge_indices[e2, 2]]
+        + t * t * inv_mass[edge_indices[e2, 3]]
+    )
+    rho = float(0.0)
+    if mobility > 0.0:
+        rho = 1.0 / (dt * dt * mobility)
+    return gap, s, t, rho
+
+
+@wp.kernel
+def _accumulate_alm_contact_force_and_hessian_kernel(
+    dt: float,
+    current_color: int,
+    pos: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    inv_mass: wp.array[float],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info_array: wp.array[TriMeshCollisionInfo],
+    planes: ParticleContactDatPlanes,
+    alm: ParticleContactAlmState,
+    stiffness: float,
+    radius: float,
+    parallel_eps: float,
+    stride: int,
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Scatter the slack-gap contact force and Hessian of every valid stored pair
+    onto its vertices of the current color (one thread per stored record)."""
+    t_id = wp.tid()
+    collision_info = collision_info_array[0]
+
+    ee_offsets = collision_info.edge_colliding_edges_offsets
+    ee_count = ee_offsets[ee_offsets.shape[0] - 1]
+    i = t_id
+    while i < ee_count:
+        if planes.ee_valid[i] == 1:
+            e1 = collision_info.edge_colliding_edges[2 * i]
+            e2 = collision_info.edge_colliding_edges[2 * i + 1]
+            n = planes.ee_normal[i]
+            gap, s, t, rho = _edge_edge_row_geometry(e1, e2, pos, inv_mass, edge_indices, n, dt, parallel_eps)
+            force, k = alm_contact_row(gap, alm.ee_lambda[i], stiffness, radius, rho)
+            if force > 0.0 or k > 0.0:
+                nn = wp.outer(n, n)
+                w0 = 1.0 - s
+                w1 = s
+                w2 = -(1.0 - t)
+                w3 = -t
+                v0 = edge_indices[e1, 2]
+                v1 = edge_indices[e1, 3]
+                v2 = edge_indices[e2, 2]
+                v3 = edge_indices[e2, 3]
+                if particle_colors[v0] == current_color:
+                    wp.atomic_add(particle_forces, v0, w0 * force * n)
+                    wp.atomic_add(particle_hessians, v0, w0 * w0 * k * nn)
+                if particle_colors[v1] == current_color:
+                    wp.atomic_add(particle_forces, v1, w1 * force * n)
+                    wp.atomic_add(particle_hessians, v1, w1 * w1 * k * nn)
+                if particle_colors[v2] == current_color:
+                    wp.atomic_add(particle_forces, v2, w2 * force * n)
+                    wp.atomic_add(particle_hessians, v2, w2 * w2 * k * nn)
+                if particle_colors[v3] == current_color:
+                    wp.atomic_add(particle_forces, v3, w3 * force * n)
+                    wp.atomic_add(particle_hessians, v3, w3 * w3 * k * nn)
+        i += stride
+
+    vt_offsets = collision_info.vertex_colliding_triangles_offsets
+    vt_count = vt_offsets[vt_offsets.shape[0] - 1]
+    i = t_id
+    while i < vt_count:
+        if planes.vt_valid[i] == 1:
+            v = collision_info.vertex_colliding_triangles[2 * i]
+            tri = collision_info.vertex_colliding_triangles[2 * i + 1]
+            n = planes.vt_normal[i]
+            gap, bary, rho = _vertex_triangle_row_geometry(v, tri, pos, inv_mass, tri_indices, n, dt)
+            force, k = alm_contact_row(gap, alm.vt_lambda[i], stiffness, radius, rho)
+            if force > 0.0 or k > 0.0:
+                nn = wp.outer(n, n)
+                if particle_colors[v] == current_color:
+                    wp.atomic_add(particle_forces, v, force * n)
+                    wp.atomic_add(particle_hessians, v, k * nn)
+                for j in range(3):
+                    u = tri_indices[tri, j]
+                    if particle_colors[u] == current_color:
+                        wp.atomic_add(particle_forces, u, -bary[j] * force * n)
+                        wp.atomic_add(particle_hessians, u, bary[j] * bary[j] * k * nn)
+        i += stride
+
+
+@wp.kernel
+def _update_alm_contact_multipliers_kernel(
+    dt: float,
+    pos: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    tri_indices: wp.array2d[wp.int32],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info_array: wp.array[TriMeshCollisionInfo],
+    planes: ParticleContactDatPlanes,
+    stiffness: float,
+    radius: float,
+    parallel_eps: float,
+    stride: int,
+    alm: ParticleContactAlmState,
+):
+    """Replace every valid pair's multiplier by its transmitted force at ``pos`` (the trial pose)."""
+    t_id = wp.tid()
+    collision_info = collision_info_array[0]
+
+    ee_offsets = collision_info.edge_colliding_edges_offsets
+    ee_count = ee_offsets[ee_offsets.shape[0] - 1]
+    i = t_id
+    while i < ee_count:
+        if planes.ee_valid[i] == 1:
+            e1 = collision_info.edge_colliding_edges[2 * i]
+            e2 = collision_info.edge_colliding_edges[2 * i + 1]
+            gap, _s, _t, rho = _edge_edge_row_geometry(
+                e1, e2, pos, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
+            )
+            force, _k = alm_contact_row(gap, alm.ee_lambda[i], stiffness, radius, rho)
+            alm.ee_lambda[i] = force
+        i += stride
+
+    vt_offsets = collision_info.vertex_colliding_triangles_offsets
+    vt_count = vt_offsets[vt_offsets.shape[0] - 1]
+    i = t_id
+    while i < vt_count:
+        if planes.vt_valid[i] == 1:
+            v = collision_info.vertex_colliding_triangles[2 * i]
+            tri = collision_info.vertex_colliding_triangles[2 * i + 1]
+            gap, _bary, rho = _vertex_triangle_row_geometry(v, tri, pos, inv_mass, tri_indices, planes.vt_normal[i], dt)
+            force, _k = alm_contact_row(gap, alm.vt_lambda[i], stiffness, radius, rho)
+            alm.vt_lambda[i] = force
+        i += stride
+
+
+@wp.kernel
+def _match_rows_kernel(
+    offsets: wp.array[wp.int32],
+    values: wp.array[wp.int32],
+    prev_offsets: wp.array[wp.int32],
+    prev_counterpart: wp.array[wp.int32],
+    prev_lambda: wp.array[float],
+    lam: wp.array[float],
+):
+    """Merge one element's previous and current sorted rows; carry matched multipliers, zero the rest."""
+    element = wp.tid()
+    start = offsets[element]
+    end = offsets[element + 1]
+    p = prev_offsets[element]
+    p_end = prev_offsets[element + 1]
+    for slot in range(start, end):
+        counterpart = values[2 * slot + 1]
+        while p < p_end and prev_counterpart[p] < counterpart:
+            p += 1
+        carried = float(0.0)
+        if p < p_end and prev_counterpart[p] == counterpart:
+            carried = prev_lambda[p]
+        lam[slot] = carried
+
+
+@wp.kernel
+def _snapshot_rows_kernel(
+    offsets: wp.array[wp.int32],
+    values: wp.array[wp.int32],
+    lam: wp.array[float],
+    prev_offsets: wp.array[wp.int32],
+    prev_counterpart: wp.array[wp.int32],
+    prev_lambda: wp.array[float],
+):
+    """Copy one element's current row (counterparts and multipliers) into the history."""
+    element = wp.tid()
+    start = offsets[element]
+    end = offsets[element + 1]
+    prev_offsets[element] = start
+    if element == offsets.shape[0] - 2:
+        prev_offsets[element + 1] = end
+    for slot in range(start, end):
+        prev_counterpart[slot] = values[2 * slot + 1]
+        prev_lambda[slot] = lam[slot]
+
+
+def accumulate_alm_contact_force_and_hessian(
+    model,
+    dt: float,
+    color: int,
+    pos: wp.array,
+    collision_info_array: wp.array,
+    planes: ParticleContactDatPlanes,
+    alm: ParticleContactAlmState,
+    *,
+    stiffness: float,
+    radius: float,
+    parallel_eps: float,
+    launch_size: int,
+    particle_forces: wp.array,
+    particle_hessians: wp.array,
+) -> None:
+    """Launch the ALM contact scatter for one color."""
+    wp.launch(
+        _accumulate_alm_contact_force_and_hessian_kernel,
+        dim=launch_size,
+        inputs=[
+            float(dt),
+            int(color),
+            pos,
+            model.particle_colors,
+            model.particle_inv_mass,
+            model.tri_indices,
+            model.edge_indices,
+            collision_info_array,
+            planes,
+            alm,
+            float(stiffness),
+            float(radius),
+            float(parallel_eps),
+            launch_size,
+        ],
+        outputs=[particle_forces, particle_hessians],
+        device=model.device,
+    )
+
+
+def update_alm_contact_multipliers(
+    model,
+    dt: float,
+    pos: wp.array,
+    collision_info_array: wp.array,
+    planes: ParticleContactDatPlanes,
+    alm: ParticleContactAlmState,
+    *,
+    stiffness: float,
+    radius: float,
+    parallel_eps: float,
+    launch_size: int,
+) -> None:
+    """Launch the once-per-sweep multiplier update at the trial pose."""
+    wp.launch(
+        _update_alm_contact_multipliers_kernel,
+        dim=launch_size,
+        inputs=[
+            float(dt),
+            pos,
+            model.particle_inv_mass,
+            model.tri_indices,
+            model.edge_indices,
+            collision_info_array,
+            planes,
+            float(stiffness),
+            float(radius),
+            float(parallel_eps),
+            launch_size,
+        ],
+        outputs=[alm],
+        device=model.device,
+    )
+
+
+def match_contact_history(collision_info: TriMeshCollisionInfo, alm: ParticleContactAlmState, device) -> None:
+    """Seed the multipliers from the previous step's rows (requires sorted rows)."""
+    for offsets, values, prev_offsets, prev_counterpart, prev_lambda, lam in (
+        (
+            collision_info.vertex_colliding_triangles_offsets,
+            collision_info.vertex_colliding_triangles,
+            alm.prev_vt_offsets,
+            alm.prev_vt_counterpart,
+            alm.prev_vt_lambda,
+            alm.vt_lambda,
+        ),
+        (
+            collision_info.edge_colliding_edges_offsets,
+            collision_info.edge_colliding_edges,
+            alm.prev_ee_offsets,
+            alm.prev_ee_counterpart,
+            alm.prev_ee_lambda,
+            alm.ee_lambda,
+        ),
+    ):
+        element_count = offsets.shape[0] - 1
+        if element_count <= 0:
+            continue
+        wp.launch(
+            _match_rows_kernel,
+            dim=element_count,
+            inputs=[offsets, values, prev_offsets, prev_counterpart, prev_lambda],
+            outputs=[lam],
+            device=device,
+        )
+
+
+def snapshot_contact_history(collision_info: TriMeshCollisionInfo, alm: ParticleContactAlmState, device) -> None:
+    """Store the current rows and multipliers for the next step's matching."""
+    for offsets, values, lam, prev_offsets, prev_counterpart, prev_lambda in (
+        (
+            collision_info.vertex_colliding_triangles_offsets,
+            collision_info.vertex_colliding_triangles,
+            alm.vt_lambda,
+            alm.prev_vt_offsets,
+            alm.prev_vt_counterpart,
+            alm.prev_vt_lambda,
+        ),
+        (
+            collision_info.edge_colliding_edges_offsets,
+            collision_info.edge_colliding_edges,
+            alm.ee_lambda,
+            alm.prev_ee_offsets,
+            alm.prev_ee_counterpart,
+            alm.prev_ee_lambda,
+        ),
+    ):
+        element_count = offsets.shape[0] - 1
+        if element_count <= 0:
+            continue
+        wp.launch(
+            _snapshot_rows_kernel,
+            dim=element_count,
+            inputs=[offsets, values, lam],
+            outputs=[prev_offsets, prev_counterpart, prev_lambda],
+            device=device,
+        )
