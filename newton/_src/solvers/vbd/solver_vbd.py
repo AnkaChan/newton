@@ -499,6 +499,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_dat_truncation_iterations: int = 2,
         particle_contact_alm_rho_scale: float = 1.0,
         particle_contact_alm_rho_floor_ratio: float = 1.0,
+        particle_contact_alm_hard_gap: float | None = None,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -626,6 +627,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 plain inertia scale soft cloth rows pump lateral oscillations in the
                 coupled VBD sweep; the floor keeps the in-sweep response at least half
                 penalty-like. ``0`` disables the floor. Defaults to ``1.0``.
+            particle_contact_alm_hard_gap: With ``"alm_dat"``, distance [m] above the stored
+                division plane at which the contact row's hard wall sits; the compliant
+                cushion spans from here to ``particle_self_contact_margin``. A contact
+                loaded beyond the cushion rests on the wall instead of on the safety
+                plane, so the final truncation stays a safety net and does not damp
+                sliding. Must be smaller than the margin. Defaults to a quarter of
+                ``particle_self_contact_margin``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -1208,6 +1216,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError("particle_contact_alm_rho_floor_ratio must be nonnegative")
         self.particle_contact_alm_rho_scale = float(particle_contact_alm_rho_scale)
         self.particle_contact_alm_rho_floor_ratio = float(particle_contact_alm_rho_floor_ratio)
+        if particle_contact_alm_hard_gap is None:
+            particle_contact_alm_hard_gap = 0.25 * _sc_margin
+        if self._alm_dat and not (0.0 <= particle_contact_alm_hard_gap < _sc_margin):
+            raise ValueError("particle_contact_alm_hard_gap must lie in [0, particle_self_contact_margin)")
+        self.particle_contact_alm_hard_gap = float(particle_contact_alm_hard_gap)
         if self._alm_dat and particle_dat_truncation_iterations < 1:
             raise ValueError(
                 "particle_dat_truncation_iterations must be at least 1 with alm_dat: the committed state is the "
@@ -4824,6 +4837,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     radius=self.particle_self_contact_margin,
                     rho_scale=self.particle_contact_alm_rho_scale,
                     rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
+                    hard_gap=self.particle_contact_alm_hard_gap,
                     parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
                     launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
                     particle_forces=self.particle_forces,
@@ -4940,6 +4954,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 radius=self.particle_self_contact_margin,
                 rho_scale=self.particle_contact_alm_rho_scale,
                 rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
+                hard_gap=self.particle_contact_alm_hard_gap,
                 parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
                 launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
             )

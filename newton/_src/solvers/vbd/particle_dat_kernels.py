@@ -717,6 +717,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     radius: float,
     rho_scale: float,
     rho_floor_ratio: float,
+    hard_gap: float,
     parallel_eps: float,
     stride: int,
     particle_forces: wp.array[wp.vec3],
@@ -724,7 +725,10 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
 ):
     """Scatter the slack-gap contact force and Hessian of every valid stored pair
     onto its vertices of the current color (one thread per stored record).
-    ``rho_scale`` multiplies the row's inertia metric."""
+    ``rho_scale`` and ``rho_floor_ratio`` shape the row's ALM metric; ``hard_gap``
+    is the thickness at which the hard wall sits above the stored division plane,
+    so a loaded contact rests on the wall and never touches the safety plane; the
+    cushion spans ``hard_gap`` to ``radius``."""
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
@@ -739,7 +743,11 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
                 e1, e2, pos, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
             )
             force, k = alm_contact_row(
-                gap, alm.ee_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+                gap - hard_gap,
+                alm.ee_lambda[i],
+                stiffness,
+                radius - hard_gap,
+                contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio),
             )
             if force > 0.0 or k > 0.0:
                 nn = wp.outer(n, n)
@@ -776,7 +784,11 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
                 v, tri, pos, inv_mass, tri_indices, planes.vt_normal[i], dt
             )
             force, k = alm_contact_row(
-                gap, alm.vt_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+                gap - hard_gap,
+                alm.vt_lambda[i],
+                stiffness,
+                radius - hard_gap,
+                contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio),
             )
             if force > 0.0 or k > 0.0:
                 nn = wp.outer(n, n)
@@ -804,6 +816,7 @@ def _update_alm_contact_multipliers_kernel(
     radius: float,
     rho_scale: float,
     rho_floor_ratio: float,
+    hard_gap: float,
     parallel_eps: float,
     stride: int,
     alm: ParticleContactAlmState,
@@ -823,7 +836,11 @@ def _update_alm_contact_multipliers_kernel(
                 e1, e2, pos, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
             )
             force, _k = alm_contact_row(
-                gap, alm.ee_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+                gap - hard_gap,
+                alm.ee_lambda[i],
+                stiffness,
+                radius - hard_gap,
+                contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio),
             )
             alm.ee_lambda[i] = force
         i += stride
@@ -839,7 +856,11 @@ def _update_alm_contact_multipliers_kernel(
                 v, tri, pos, inv_mass, tri_indices, planes.vt_normal[i], dt
             )
             force, _k = alm_contact_row(
-                gap, alm.vt_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+                gap - hard_gap,
+                alm.vt_lambda[i],
+                stiffness,
+                radius - hard_gap,
+                contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio),
             )
             alm.vt_lambda[i] = force
         i += stride
@@ -904,6 +925,7 @@ def accumulate_alm_contact_force_and_hessian(
     radius: float,
     rho_scale: float,
     rho_floor_ratio: float,
+    hard_gap: float,
     parallel_eps: float,
     launch_size: int,
     particle_forces: wp.array,
@@ -928,6 +950,7 @@ def accumulate_alm_contact_force_and_hessian(
             float(radius),
             float(rho_scale),
             float(rho_floor_ratio),
+            float(hard_gap),
             float(parallel_eps),
             launch_size,
         ],
@@ -948,6 +971,7 @@ def update_alm_contact_multipliers(
     radius: float,
     rho_scale: float,
     rho_floor_ratio: float,
+    hard_gap: float,
     parallel_eps: float,
     launch_size: int,
 ) -> None:
@@ -967,6 +991,7 @@ def update_alm_contact_multipliers(
             float(radius),
             float(rho_scale),
             float(rho_floor_ratio),
+            float(hard_gap),
             float(parallel_eps),
             launch_size,
         ],
