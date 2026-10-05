@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dense ALM floor sweep: wide layout</title><style>
+:root{color-scheme:dark}body{margin:0;background:#101722;color:#edf2f7;font:16px/1.5 system-ui,sans-serif}
+main{max-width:1800px;margin:auto;padding:24px}a{color:#8edcdd}button,select,input{font:inherit}
+.toolbar{position:sticky;top:0;z-index:2;background:#182232;padding:12px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.viewport{overflow:auto;border:1px solid #344253}video{display:block;width:100%;height:auto;max-width:2724px}
+.viewport.native video{width:2724px;max-width:none}
+</style></head><body><main><h1>Three stiffness rows, 6 columns</h1>
+<p>18 selected trajectories from the same experiment. Rows: tri_ke = 1e3, 1e5, 1e7, with tri_ka = 0.2 tri_ke.
+Columns: <b>vanilla VBD (ALM off)</b>, then ALM floor multipliers 90, 9, 1, 0.6, 0.1.
+The bags and labels remain upright. No physics was rerun; the original video is preserved.</p>
+<div class="toolbar"><button id="play">Play</button><button id="restart">Restart</button>
+<label>Time <input id="seek" type="range" min="0" max="6" value="0" step="0.0166667"></label><output id="time">0.00 s</output>
+<button id="size">Enlarge panels</button>
+<label>Scroll to floor <select id="column"><option value="0">Vanilla VBD</option><option value="1">90 k</option><option value="2">9 k</option><option value="3">1 k</option><option value="4">0.6 k</option><option value="5">0.1 k</option></select></label>
+<span>Stiffness: top 1e3 | middle 1e5 | bottom 1e7</span><a href="dense_floor_sweep_six_columns.mp4">Open/download MP4</a></div>
+<div class="viewport" id="viewport"><video id="video" muted playsinline preload="metadata" poster="dense_floor_sweep_six_columns_frame180.png" src="dense_floor_sweep_six_columns.mp4"></video></div>
+<p>All columns fit the viewer by default. Enlarge the panels to inspect the labels and scroll horizontally; all columns stay synchronized. The floor is rho = max(rho_inertia, f*k).
+The video retains the deformation, original force residual, and scalar effective-stiffness labels from the original.</p>
+<p><a href="index.html">Original tall video, measurements, and experiment limitations</a> |
+<a href="index-wide.html">Original fourteen-column video</a> |
+<a href="six_columns_video_validation.json">Video validation</a> | <a href="../transpose_dense_floor_video.py">Recomposition source</a></p>
+</main><script>
+const video=document.querySelector('#video'),play=document.querySelector('#play'),seek=document.querySelector('#seek');
+play.onclick=()=>video.paused?video.play():video.pause();video.onplay=()=>play.textContent='Pause';video.onpause=()=>play.textContent='Play';
+document.querySelector('#restart').onclick=()=>{video.currentTime=0;video.play();};
+video.ontimeupdate=()=>{seek.value=video.currentTime;document.querySelector('#time').textContent=video.currentTime.toFixed(2)+' s';};
+seek.oninput=()=>video.currentTime=Number(seek.value);
+const viewport=document.querySelector('#viewport'),size=document.querySelector('#size');
+size.onclick=()=>{viewport.classList.toggle('native');size.textContent=viewport.classList.contains('native')?'Fit all columns':'Enlarge panels';};
+document.querySelector('#column').onchange=e=>{viewport.classList.add('native');size.textContent='Fit all columns';viewport.scrollTo({left:156+Number(e.target.value)*428,behavior:'smooth'});};
+</script></body></html>
