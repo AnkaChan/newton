@@ -346,6 +346,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_self_contact_method: str = "penalty_dat",
         particle_dat_plane_update_interval: int = 1,
         particle_dat_truncation_iterations: int = 2,
+        particle_contact_alm_rho_scale: float = 1.0,
+        particle_contact_alm_rho_floor_ratio: float = 1.0,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -490,6 +492,15 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_dat_truncation_iterations: With ``"alm_dat"``, number of
                 truncate-and-rebuild rounds applied to the final iterate before the
                 step commits. Defaults to ``2``.
+            particle_contact_alm_rho_scale: With ``"alm_dat"``, positive multiplier on the
+                contact rows' inertia-derived ALM metric. Larger values move the row
+                toward a penalty response within a sweep (faster, stiffer) without
+                changing its converged force. Defaults to ``1.0``.
+            particle_contact_alm_rho_floor_ratio: With ``"alm_dat"``, lower bound on the
+                contact rows' ALM metric as a multiple of ``soft_contact_ke``. At the
+                plain inertia scale soft cloth rows pump lateral oscillations in the
+                coupled VBD sweep; the floor keeps the in-sweep response at least half
+                penalty-like. ``0`` disables the floor. Defaults to ``1.0``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -956,6 +967,17 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
         self.particle_dat_plane_update_interval = int(particle_dat_plane_update_interval)
         self.particle_dat_truncation_iterations = int(particle_dat_truncation_iterations)
+        if not (particle_contact_alm_rho_scale > 0.0):
+            raise ValueError("particle_contact_alm_rho_scale must be positive")
+        if particle_contact_alm_rho_floor_ratio < 0.0:
+            raise ValueError("particle_contact_alm_rho_floor_ratio must be nonnegative")
+        self.particle_contact_alm_rho_scale = float(particle_contact_alm_rho_scale)
+        self.particle_contact_alm_rho_floor_ratio = float(particle_contact_alm_rho_floor_ratio)
+        if self._alm_dat and particle_dat_truncation_iterations < 1:
+            raise ValueError(
+                "particle_dat_truncation_iterations must be at least 1 with alm_dat: the committed state is the "
+                "truncated iterate, so the final truncation cannot be skipped"
+            )
         # thickness reserved on each side of a stored plane; the certificate is "no crossing"
         self._dat_margin = 0.0
         self._dat_planes = None
@@ -4014,6 +4036,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                     self._dat_alm_state,
                     stiffness=self.model.soft_contact_ke,
                     radius=self.particle_self_contact_margin,
+                    rho_scale=self.particle_contact_alm_rho_scale,
+                    rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
                     parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
                     launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
                     particle_forces=self.particle_forces,
@@ -4131,6 +4155,8 @@ class SolverVBD(SolverBase, CouplingInterface):
                 self._dat_alm_state,
                 stiffness=self.model.soft_contact_ke,
                 radius=self.particle_self_contact_margin,
+                rho_scale=self.particle_contact_alm_rho_scale,
+                rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
                 parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
                 launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
             )

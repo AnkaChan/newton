@@ -28,6 +28,8 @@ from .rigid_vbd_kernels import (
 
 # room reported when no vertex of a pair approaches its plane
 _DAT_INFINITE_ROOM = wp.constant(1.0e30)
+# below this closest-point distance the contact direction falls back to the plane normal
+_CONTACT_DIRECTION_EPS = wp.constant(1.0e-9)
 
 
 @wp.func
@@ -532,6 +534,19 @@ def commit_truncated_displacement(
 
 
 @wp.func
+def contact_alm_rho(rho_inertia: float, stiffness: float, rho_scale: float, floor_ratio: float):
+    """Effective ALM metric: scaled inertia metric, floored at ``floor_ratio * K``.
+
+    At the plain inertia scale a soft cloth's contact rows have rho far below K,
+    so a sweep transmits mostly the stale multiplier through a tiny Hessian and
+    the coupled VBD iteration can pump lateral oscillations. The floor keeps the
+    in-sweep response at least half penalty-like (s <= 1/2 when the ratio is 1)
+    while the converged force stays rho-free.
+    """
+    return wp.max(rho_inertia * rho_scale, floor_ratio * stiffness)
+
+
+@wp.func
 def alm_contact_row(gap: float, lam: float, stiffness: float, radius: float, rho: float):
     """Evaluate the cushion-plus-wall contact row for one pair.
 
@@ -610,20 +625,34 @@ def _vertex_triangle_row_geometry(
     n: wp.vec3,
     dt: float,
 ):
-    """Witness gap along ``n``, barycentric weights, and the row's inertia metric."""
+    """Contact direction, signed witness gap, barycentric weights, and the row's inertia metric.
+
+    The force acts along the closest-point direction (the physical contact
+    normal, as the penalty path uses); the stored plane normal ``n`` only fixes
+    its sign, so a vertex that crossed the triangle reports a negative gap
+    instead of a flipped normal. Degenerate zero distance falls back to ``n``.
+    """
     a = pos[tri_indices[tri, 0]]
     b = pos[tri_indices[tri, 1]]
     c = pos[tri_indices[tri, 2]]
     _closest, bary, _feature = triangle_closest_point(a, b, c, pos[v])
     witness = bary[0] * a + bary[1] * b + bary[2] * c
-    gap = wp.dot(n, pos[v] - witness)
+    diff = pos[v] - witness
+    dis = wp.length(diff)
+    direction = n
+    gap = float(0.0)
+    if dis > _CONTACT_DIRECTION_EPS:
+        direction = diff / dis
+        if wp.dot(direction, n) < 0.0:
+            direction = -direction
+        gap = wp.dot(direction, diff)
     mobility = inv_mass[v]
     for k in range(3):
         mobility += bary[k] * bary[k] * inv_mass[tri_indices[tri, k]]
     rho = float(0.0)
     if mobility > 0.0:
         rho = 1.0 / (dt * dt * mobility)
-    return gap, bary, rho
+    return direction, gap, bary, rho
 
 
 @wp.func
@@ -637,7 +666,11 @@ def _edge_edge_row_geometry(
     dt: float,
     parallel_eps: float,
 ):
-    """Witness gap along ``n`` (e1 positive), the (s, t) weights, and the inertia metric."""
+    """Contact direction (e1 positive), signed witness gap, the (s, t) weights, and the inertia metric.
+
+    Same convention as the vertex-triangle row: closest-point direction for the
+    force, stored plane normal ``n`` for the sign only.
+    """
     e1_a = pos[edge_indices[e1, 2]]
     e1_b = pos[edge_indices[e1, 3]]
     e2_a = pos[edge_indices[e2, 2]]
@@ -647,7 +680,15 @@ def _edge_edge_row_geometry(
     t = st[1]
     c1 = e1_a + (e1_b - e1_a) * s
     c2 = e2_a + (e2_b - e2_a) * t
-    gap = wp.dot(n, c1 - c2)
+    diff = c1 - c2
+    dis = wp.length(diff)
+    direction = n
+    gap = float(0.0)
+    if dis > _CONTACT_DIRECTION_EPS:
+        direction = diff / dis
+        if wp.dot(direction, n) < 0.0:
+            direction = -direction
+        gap = wp.dot(direction, diff)
     mobility = (
         (1.0 - s) * (1.0 - s) * inv_mass[edge_indices[e1, 2]]
         + s * s * inv_mass[edge_indices[e1, 3]]
@@ -657,7 +698,7 @@ def _edge_edge_row_geometry(
     rho = float(0.0)
     if mobility > 0.0:
         rho = 1.0 / (dt * dt * mobility)
-    return gap, s, t, rho
+    return direction, gap, s, t, rho
 
 
 @wp.kernel
@@ -674,13 +715,16 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     alm: ParticleContactAlmState,
     stiffness: float,
     radius: float,
+    rho_scale: float,
+    rho_floor_ratio: float,
     parallel_eps: float,
     stride: int,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
     """Scatter the slack-gap contact force and Hessian of every valid stored pair
-    onto its vertices of the current color (one thread per stored record)."""
+    onto its vertices of the current color (one thread per stored record).
+    ``rho_scale`` multiplies the row's inertia metric."""
     t_id = wp.tid()
     collision_info = collision_info_array[0]
 
@@ -691,9 +735,12 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
         if planes.ee_valid[i] == 1:
             e1 = collision_info.edge_colliding_edges[2 * i]
             e2 = collision_info.edge_colliding_edges[2 * i + 1]
-            n = planes.ee_normal[i]
-            gap, s, t, rho = _edge_edge_row_geometry(e1, e2, pos, inv_mass, edge_indices, n, dt, parallel_eps)
-            force, k = alm_contact_row(gap, alm.ee_lambda[i], stiffness, radius, rho)
+            n, gap, s, t, rho = _edge_edge_row_geometry(
+                e1, e2, pos, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
+            )
+            force, k = alm_contact_row(
+                gap, alm.ee_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+            )
             if force > 0.0 or k > 0.0:
                 nn = wp.outer(n, n)
                 w0 = 1.0 - s
@@ -725,9 +772,12 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
         if planes.vt_valid[i] == 1:
             v = collision_info.vertex_colliding_triangles[2 * i]
             tri = collision_info.vertex_colliding_triangles[2 * i + 1]
-            n = planes.vt_normal[i]
-            gap, bary, rho = _vertex_triangle_row_geometry(v, tri, pos, inv_mass, tri_indices, n, dt)
-            force, k = alm_contact_row(gap, alm.vt_lambda[i], stiffness, radius, rho)
+            n, gap, bary, rho = _vertex_triangle_row_geometry(
+                v, tri, pos, inv_mass, tri_indices, planes.vt_normal[i], dt
+            )
+            force, k = alm_contact_row(
+                gap, alm.vt_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+            )
             if force > 0.0 or k > 0.0:
                 nn = wp.outer(n, n)
                 if particle_colors[v] == current_color:
@@ -752,6 +802,8 @@ def _update_alm_contact_multipliers_kernel(
     planes: ParticleContactDatPlanes,
     stiffness: float,
     radius: float,
+    rho_scale: float,
+    rho_floor_ratio: float,
     parallel_eps: float,
     stride: int,
     alm: ParticleContactAlmState,
@@ -767,10 +819,12 @@ def _update_alm_contact_multipliers_kernel(
         if planes.ee_valid[i] == 1:
             e1 = collision_info.edge_colliding_edges[2 * i]
             e2 = collision_info.edge_colliding_edges[2 * i + 1]
-            gap, _s, _t, rho = _edge_edge_row_geometry(
+            _n, gap, _s, _t, rho = _edge_edge_row_geometry(
                 e1, e2, pos, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
             )
-            force, _k = alm_contact_row(gap, alm.ee_lambda[i], stiffness, radius, rho)
+            force, _k = alm_contact_row(
+                gap, alm.ee_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+            )
             alm.ee_lambda[i] = force
         i += stride
 
@@ -781,8 +835,12 @@ def _update_alm_contact_multipliers_kernel(
         if planes.vt_valid[i] == 1:
             v = collision_info.vertex_colliding_triangles[2 * i]
             tri = collision_info.vertex_colliding_triangles[2 * i + 1]
-            gap, _bary, rho = _vertex_triangle_row_geometry(v, tri, pos, inv_mass, tri_indices, planes.vt_normal[i], dt)
-            force, _k = alm_contact_row(gap, alm.vt_lambda[i], stiffness, radius, rho)
+            _n, gap, _bary, rho = _vertex_triangle_row_geometry(
+                v, tri, pos, inv_mass, tri_indices, planes.vt_normal[i], dt
+            )
+            force, _k = alm_contact_row(
+                gap, alm.vt_lambda[i], stiffness, radius, contact_alm_rho(rho, stiffness, rho_scale, rho_floor_ratio)
+            )
             alm.vt_lambda[i] = force
         i += stride
 
@@ -844,6 +902,8 @@ def accumulate_alm_contact_force_and_hessian(
     *,
     stiffness: float,
     radius: float,
+    rho_scale: float,
+    rho_floor_ratio: float,
     parallel_eps: float,
     launch_size: int,
     particle_forces: wp.array,
@@ -866,6 +926,8 @@ def accumulate_alm_contact_force_and_hessian(
             alm,
             float(stiffness),
             float(radius),
+            float(rho_scale),
+            float(rho_floor_ratio),
             float(parallel_eps),
             launch_size,
         ],
@@ -884,6 +946,8 @@ def update_alm_contact_multipliers(
     *,
     stiffness: float,
     radius: float,
+    rho_scale: float,
+    rho_floor_ratio: float,
     parallel_eps: float,
     launch_size: int,
 ) -> None:
@@ -901,6 +965,8 @@ def update_alm_contact_multipliers(
             planes,
             float(stiffness),
             float(radius),
+            float(rho_scale),
+            float(rho_floor_ratio),
             float(parallel_eps),
             launch_size,
         ],
