@@ -20,6 +20,8 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=500]
+        # Explicitly published ALM comparison video and its HTML poster.
+        exclude: ^notes/alm-bag-wiggle/results-dense-floor-video-sweep/dense_floor_sweep_six_columns(\.mp4|_frame180\.png)$
       - id: check-case-conflict
       - id: check-illegal-windows-names
       - id: check-json
