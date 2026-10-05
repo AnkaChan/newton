@@ -137,6 +137,36 @@ def test_resting_vertex_carries_its_weight_in_the_multiplier(test, device):
     test.assertAlmostEqual(float(lam.max()), weight, delta=0.05 * weight)
 
 
+def test_overloaded_vertex_rests_on_the_hard_wall_above_the_plane(test, device):
+    """Hold a vertex heavier than the cushion can carry at the hard gap, with the multiplier equal to its weight."""
+    model = _vertex_over_fixed_cloth(device, height=0.015)
+    model.particle_mass.assign(np.where(model.particle_mass.numpy() > 0.0, 1.0, 0.0).astype(np.float32))
+    model.particle_inv_mass.assign(np.where(model.particle_mass.numpy() > 0.0, 1.0, 0.0).astype(np.float32))
+    model.soft_contact_ke = 100.0  # cushion capacity K (R - hard_gap) = 1.5 N, weight 9.81 N
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.02,
+        particle_self_contact_gap=0.01,
+        particle_self_contact_method="alm_dat",
+        particle_contact_alm_hard_gap=0.005,
+    )
+    state, output = model.state(), model.state()
+    free = model.particle_count - 1
+    heights = []
+    for _ in range(240):
+        solver.step(state, output, None, None, 1.0 / 60.0)
+        state, output = output, state
+        heights.append(float(state.particle_q.numpy()[free, 2]) - 1.0)
+        test.assertGreaterEqual(heights[-1], -1.0e-6)
+    # rests at the hard gap (within the wall's compliance 1/rho), not on the surface, and does not sink
+    test.assertAlmostEqual(heights[-1], 0.005, delta=5.0e-4)
+    test.assertAlmostEqual(heights[-1], heights[-120], delta=1.0e-4)
+    lam = solver.particle_contact_alm_multipliers()
+    test.assertAlmostEqual(float(lam.max()), 9.81, delta=0.5)
+
+
 def _patch_on_fixed_plate(device):
     """A free 6x6 cloth resting inside the margin above a fixed, level 12x12 cloth."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -223,6 +253,12 @@ add_function_test(
     TestParticleContactAlm,
     "test_resting_vertex_carries_its_weight_in_the_multiplier",
     test_resting_vertex_carries_its_weight_in_the_multiplier,
+    devices=devices,
+)
+add_function_test(
+    TestParticleContactAlm,
+    "test_overloaded_vertex_rests_on_the_hard_wall_above_the_plane",
+    test_overloaded_vertex_rests_on_the_hard_wall_above_the_plane,
     devices=devices,
 )
 add_function_test(
