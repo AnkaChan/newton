@@ -137,6 +137,63 @@ def test_resting_vertex_carries_its_weight_in_the_multiplier(test, device):
     test.assertAlmostEqual(float(lam.max()), weight, delta=0.05 * weight)
 
 
+def _patch_on_fixed_plate(device):
+    """A free 6x6 cloth resting inside the margin above a fixed, level 12x12 cloth."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    cell = 0.05
+    for grid, z, mass in ((12, 1.0, 0.0), (6, 1.019, 0.02)):
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.5 * grid * cell, -0.5 * grid * cell, z),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=grid,
+            dim_y=grid,
+            cell_x=cell,
+            cell_y=cell,
+            mass=mass,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            tri_kd=1.0e-2,
+            edge_ke=1.0e-3,
+            particle_radius=0.005,
+        )
+    builder.color()
+    model = builder.finalize(device=device)
+    model.soft_contact_ke = 1.0e3
+    model.soft_contact_kd = 0.0
+    model.soft_contact_mu = 0.0
+    return model, 13 * 13
+
+
+def test_resting_patch_does_not_drift_sideways(test, device):
+    """Keep a frictionless patch resting on a level plate in place: contact forces must act along the contact direction."""
+    model, fixed_count = _patch_on_fixed_plate(device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=6,
+        particle_enable_self_contact=True,
+        particle_self_contact_margin=0.02,
+        particle_self_contact_gap=0.01,
+        particle_self_contact_method="alm_dat",
+        particle_vertex_contact_buffer_size=16,
+        particle_edge_contact_buffer_size=64,
+    )
+    state, output = model.state(), model.state()
+    start = model.particle_q.numpy()[fixed_count:, :2].mean(axis=0)
+    centers = []
+    for _ in range(240):
+        solver.step(state, output, None, None, 1.0 / 60.0)
+        state, output = output, state
+        centers.append(state.particle_q.numpy()[fixed_count:, :2].mean(axis=0))
+    # the triangulated plate biases the first settle by a few millimetres on every path;
+    # what must not happen is a sustained lateral push, so the drift has to stop growing
+    total = float(np.linalg.norm(centers[-1] - start))
+    late = float(np.linalg.norm(centers[-1] - centers[119]))
+    test.assertLess(total, 1.0e-2)
+    test.assertLess(late, 1.0e-3)
+    test.assertGreaterEqual(float(state.particle_q.numpy()[fixed_count:, 2].min()), 1.0 - 1.0e-6)
+
+
 devices = get_test_devices()
 
 
@@ -166,6 +223,12 @@ add_function_test(
     TestParticleContactAlm,
     "test_resting_vertex_carries_its_weight_in_the_multiplier",
     test_resting_vertex_carries_its_weight_in_the_multiplier,
+    devices=devices,
+)
+add_function_test(
+    TestParticleContactAlm,
+    "test_resting_patch_does_not_drift_sideways",
+    test_resting_patch_does_not_drift_sideways,
     devices=devices,
 )
 
