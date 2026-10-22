@@ -1,0 +1,131 @@
+{
+  "name": "cached_jacket_smoke",
+  "family": "cloth",
+  "units": "m",
+  "up_axis": "Z",
+  "source": "https://github.com/newton-physics/newton-assets",
+  "license": "BSD-3-Clause",
+  "generator_revision": "cached-jacket-quadric-v1",
+  "resolution": "medium",
+  "dimensions_m": [
+    0.5603958368301392,
+    0.4410218596458435,
+    0.7193313837051392
+  ],
+  "bounds_m": [
+    [
+      -0.2823992967605591,
+      -0.31381934881210327,
+      0.0038962960243225098
+    ],
+    [
+      0.2779965400695801,
+      0.12720249593257904,
+      0.7232276797294617
+    ]
+  ],
+  "vertex_count": 830,
+  "triangle_count": 1599,
+  "tet_count": 0,
+  "geometry_sha256": "59877071c89afa73bb5949537f0983e4285253714d7100c33ea8d17083793f4c",
+  "color_rgb": [
+    0.68,
+    0.27,
+    0.18
+  ],
+  "rest_shape": "generated geometry, no settling or simulated draping",
+  "landmarks": {
+    "top": [
+      816,
+      817,
+      823,
+      824,
+      825,
+      828
+    ],
+    "bottom": [
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      770
+    ],
+    "left": [
+      419
+    ],
+    "right": [
+      381
+    ]
+  },
+  "synthetic_material": {
+    "density_kg_m2": 0.25,
+    "particle_radius_m": 0.002,
+    "tri_ke": 1000.0,
+    "tri_ka": 1000.0,
+    "tri_kd": 0.01,
+    "edge_ke": 0.01,
+    "edge_kd": 0.001
+  },
+  "source_name": "h1_jacket",
+  "source_revision": "26c7f5ccaadd9a163f4d6c8f867c789b3ac57d83",
+  "source_tree_sha256": "c8b51388a8d8f5629450f7e1e7f3b5d4f91baf693c457e22dd1cfb17e9178dfc",
+  "license_notice": "This product bundles the Style3D Description, which is available under\na BSD 3-Clause license with the following terms:\n\nCopyright (c) 2025 Style3D. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\n3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \u201cAS IS\u201d AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+  "source_entrypoint": {
+    "path": "/home/horde/.cache/newton/newton-assets_style3d_82127ee9_26c7f5cc/style3d/garments/h1_jacket.usd",
+    "sha256": "9ac8e3ed749aef81b580d7c17056dbfd80c5ab54aeba0becbf8403ee05e8bc27",
+    "bytes": 1769621
+  },
+  "source_vertex_count": 33703,
+  "source_triangle_count": 66930,
+  "preparation": {
+    "operation": "quadric edge collapse in the authored rest geometry",
+    "fast_simplification_version": "0.1.13",
+    "trimesh_version": "4.11.4",
+    "target_faces": 1600,
+    "aggression": 3,
+    "max_distance_to_source_vertex_m": 0.00469785713925748
+  },
+  "preview_pose": "coarsened source rest geometry",
+  "material_mapping": "Synthetic Newton triangle/bending coefficients. Style3D material data not transferred.",
+  "limitations": "Thin triangles remain after decimation; exploratory smoke only, not a qualified fidelity case.",
+  "validation": {
+    "finite": true,
+    "min_triangle_area_m2": 2.974969567526749e-06,
+    "surface_area_m2": 1.1293794562590067,
+    "min_triangle_angle_degrees": 1.6865242041733122,
+    "triangles_with_angle_below_10_degrees": 126,
+    "nonmanifold_edges": 0,
+    "boundary_edges": 63,
+    "inconsistent_winding_edges": 0,
+    "connected_components": 1,
+    "valid": true
+  },
+  "topology": {
+    "euler_characteristic": -1,
+    "boundary_loops": 3,
+    "boundary_vertices_all_degree_two": true
+  },
+  "source_topology": {
+    "euler_characteristic": -1,
+    "boundary_loops": 3,
+    "boundary_vertices_all_degree_two": true
+  },
+  "npz_sha256": "c7e4696553f09a1d7116f930de3549ab512ce581b804f5ed767a294ab8750161",
+  "npz": "cached_jacket_smoke.npz",
+  "preview": "cached_jacket_smoke.png"
+}

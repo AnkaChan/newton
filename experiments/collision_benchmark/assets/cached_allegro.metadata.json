@@ -1,0 +1,138 @@
+{
+  "name": "allegro",
+  "status": "cached, import and grasp qualification separate",
+  "directory": "/home/horde/.cache/newton/mujoco_menagerie_wonik_allegro_0cfd16aa_da76818e/wonik_allegro",
+  "cache_revision_suffix": "da76818e",
+  "units": "m (robot convention; verify importer)",
+  "source": "https://github.com/google-deepmind/mujoco_menagerie",
+  "source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+  "source_tree_sha256": "7b03639c5472fdab412009cb71ceac6220b94e140c708f2561fb9161e56edc58",
+  "source_files": [
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "78268d42097269a81d5a84d7b4c45ce775c74454165288816cc8409a858935ac"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "09c187439ecece8b00330e71eb988d3d30f29373c580dc31ab54200d0aa4deb4"
+    },
+    {
+      "path": "README.md",
+      "sha256": "10d8795ad8682bdab403aab8fb7b5d4c051b68e025accfe58ebf0d440188665b"
+    },
+    {
+      "path": "allegro_hand.png",
+      "sha256": "c23b303879ca9db0a1e4291d7e5b41dac2a0cb4140f679cb0f7ed03f66c91906"
+    },
+    {
+      "path": "assets/base_link.stl",
+      "sha256": "4060e1ae52bca21367e15a1dfab16bc7c2e81849566631b7f55e2cf376b7bc85"
+    },
+    {
+      "path": "assets/base_link_left.stl",
+      "sha256": "9f66c1cb8d27b9f07e49101a7997a49c60d3cc3ccbc8de96065322df68f47a0b"
+    },
+    {
+      "path": "assets/link_0.0.stl",
+      "sha256": "32b90a6744d472a6ffaee02cbf32eb8a5600b1da0944e86aeb9f53503a9f8ac9"
+    },
+    {
+      "path": "assets/link_1.0.stl",
+      "sha256": "e3dfb35b6682f62f18ca6ed0b39cb94ff627b68e0e3373cf7212390574604680"
+    },
+    {
+      "path": "assets/link_12.0_left.stl",
+      "sha256": "1749ba567bf36729a81eaecf384bc4f5483be8c496af54d230500b96f1d81dcc"
+    },
+    {
+      "path": "assets/link_12.0_right.stl",
+      "sha256": "c5418fc127311eefee1d8ee69dfcfde2157d038286900bee91608d2701b00f13"
+    },
+    {
+      "path": "assets/link_13.0.stl",
+      "sha256": "e906896afc078a12c9c377e3a2b07f375583d3b869581f9962030cabc888be29"
+    },
+    {
+      "path": "assets/link_14.0.stl",
+      "sha256": "a9e4983e4bff7fc7d868b4965c9865edb2669b946434095703766202b5de01ff"
+    },
+    {
+      "path": "assets/link_15.0.stl",
+      "sha256": "bf963adb775b79b27649f4f5dff4ced58ef676ce86cc677de49d3810382d11e0"
+    },
+    {
+      "path": "assets/link_15.0_tip.stl",
+      "sha256": "a7147c765d4b6d2eb16fa14bba2e8eceec4a750bc346260893ca02aca1fd7a63"
+    },
+    {
+      "path": "assets/link_2.0.stl",
+      "sha256": "9c98477c65b45f5a3de1df0e1b54281da2385f4eafd057d103ab40893771c2d0"
+    },
+    {
+      "path": "assets/link_3.0.stl",
+      "sha256": "fe333088176395aa7d8a913aa953d3cd649c4c77753224239b78b2c99e3e314c"
+    },
+    {
+      "path": "assets/link_3.0_tip.stl",
+      "sha256": "9c3fa04fea0dfa1257c8a1b02d2b7d982b0d985c1ddda1edf148827944835f39"
+    },
+    {
+      "path": "assets/link_4.0.stl",
+      "sha256": "f80ac4d443169c56507afaa0b3c72ec3679312bc80cbaebd03e73e96dd18c408"
+    },
+    {
+      "path": "left_hand.xml",
+      "sha256": "4c604119947fc7f055247541effdb937e1648e92e17b16512a1593e1c37ef787"
+    },
+    {
+      "path": "right_hand.xml",
+      "sha256": "cec3efe34be49c8220c23afdae0cfacbce10164a5bc7c34075b6668ee0a862a6"
+    },
+    {
+      "path": "scene_left.xml",
+      "sha256": "032b28250a7d6fb27378d2de18c271666aa150fd9b58a869fb28443333a9b3b8"
+    },
+    {
+      "path": "scene_right.xml",
+      "sha256": "20bbff25303c67625d2052fc377cffa48c14a0785b028c023e16df89d96ca491"
+    }
+  ],
+  "license": "BSD-2-Clause",
+  "entrypoint": {
+    "path": "/home/horde/.cache/newton/mujoco_menagerie_wonik_allegro_0cfd16aa_da76818e/wonik_allegro/right_hand.xml",
+    "sha256": "cec3efe34be49c8220c23afdae0cfacbce10164a5bc7c34075b6668ee0a862a6",
+    "bytes": 9983
+  },
+  "license_file": {
+    "path": "/home/horde/.cache/newton/mujoco_menagerie_wonik_allegro_0cfd16aa_da76818e/wonik_allegro/LICENSE",
+    "sha256": "09c187439ecece8b00330e71eb988d3d30f29373c580dc31ab54200d0aa4deb4",
+    "bytes": 1289
+  },
+  "license_notice": "Copyright (c) 2016, SimLab\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without\nmodification, are permitted provided that the following conditions are met:\n\n* Redistributions of source code must retain the above copyright notice, this\n  list of conditions and the following disclaimer.\n\n* Redistributions in binary form must reproduce the above copyright notice,\n  this list of conditions and the following disclaimer in the documentation\n  and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\"\nAND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE\nIMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE\nFOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL\nDAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR\nSERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\nCAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,\nOR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE\nOF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n",
+  "preview": "cached_allegro.png",
+  "dimensions_m": [
+    0.2462642639875412,
+    0.24744704365730286,
+    0.04150000214576721
+  ],
+  "bounds_m": [
+    [
+      -0.0980643481016159,
+      -0.17969731986522675,
+      0.0
+    ],
+    [
+      0.1481999158859253,
+      0.06774971634149551,
+      0.04150000214576721
+    ]
+  ],
+  "vertex_count": 13631,
+  "triangle_count": 27258,
+  "preview_geometry_sha256": "429c010162a974e5d3f46ac1f0818bcd37d10d8a183e50df9691535c5e48fa55",
+  "preview_pose": "imported joint rest pose",
+  "preview_disclosure": "static imported geometry; no simulation or material qualification",
+  "body_count": 21,
+  "joint_count": 21,
+  "shape_count": 42
+}

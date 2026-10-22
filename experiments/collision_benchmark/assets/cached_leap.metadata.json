@@ -1,0 +1,138 @@
+{
+  "name": "leap",
+  "status": "cached, import and grasp qualification separate",
+  "directory": "/home/horde/.cache/newton/mujoco_menagerie_leap_hand_547fbb86_da76818e/leap_hand",
+  "cache_revision_suffix": "da76818e",
+  "units": "m (robot convention; verify importer)",
+  "source": "https://github.com/google-deepmind/mujoco_menagerie",
+  "source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+  "source_tree_sha256": "0cde40b778f205d69140d9271cd314029ff179d61da51ed370ab5c5abe349137",
+  "source_files": [
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "da7f76c22a5207b7017129cdd94b44ec0c502fbd3448879ad07ee0b1e6ed6a39"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "5a91c3d709c2ee3a71f166b46e3208cebd83c0c7a870746c729b31a01f156984"
+    },
+    {
+      "path": "README.md",
+      "sha256": "ca21a2f308c24a66aff628441359dc405af069add20c604ce4341f9281b5d99a"
+    },
+    {
+      "path": "assets/base.obj",
+      "sha256": "3d7194a6a33626ffcdfce78a0ca854e67b6b49f2e09a3bd62656f94515fdfbec"
+    },
+    {
+      "path": "assets/distal.obj",
+      "sha256": "6bfa2afb2a06557ce0c54b03baec13522bfe561aabb576bd4701d4704f93ec0f"
+    },
+    {
+      "path": "assets/leap_mount.obj",
+      "sha256": "30c4cc7e63c922b34b19027d2112d3ce1dd16d92484c99ceaa4b2c5f96e8c3de"
+    },
+    {
+      "path": "assets/medial.obj",
+      "sha256": "472e054348c5a0e987829e721d5ba8486ddd47d867e416bb45d8d2a2ff917acf"
+    },
+    {
+      "path": "assets/palm_left.obj",
+      "sha256": "5369c7bb802fb7effb58ff24d64da77b8630330c800cf490d96b631e93fed1e9"
+    },
+    {
+      "path": "assets/palm_right.obj",
+      "sha256": "839b2e58e69ce57e0feaa2f565f8124101a2ed81d99fb2c5d00372b245634ab8"
+    },
+    {
+      "path": "assets/pip_left.obj",
+      "sha256": "8a9206845849784efef43486e2dafaad142f32a53c0d0fdde0381d178ec6acb4"
+    },
+    {
+      "path": "assets/proximal.obj",
+      "sha256": "3fff19dc1f0100bb5f34eaf8a40fcf3db40f96fd7179bb7336e538b21ff8e067"
+    },
+    {
+      "path": "assets/thumb_base.obj",
+      "sha256": "d28876cc3b674323aa7d8a628a4240cda2757c61263b05e86a66280035a2689d"
+    },
+    {
+      "path": "assets/thumb_distal.obj",
+      "sha256": "4695d72a70285e8a0132ed4de49876cf99c813182e3a24b172b53631224890de"
+    },
+    {
+      "path": "assets/thumb_mp_left.obj",
+      "sha256": "8a9206845849784efef43486e2dafaad142f32a53c0d0fdde0381d178ec6acb4"
+    },
+    {
+      "path": "assets/thumb_proximal.obj",
+      "sha256": "5b402876601f2b0b36631e6a54ad20588f88e74f52320b6c902a8bc694578689"
+    },
+    {
+      "path": "assets/thumb_tip.obj",
+      "sha256": "7987f2599efaa73a6d7ccf0dd26d9f9e06949c7c66c268c9f8989aac345822e0"
+    },
+    {
+      "path": "assets/tip.obj",
+      "sha256": "eb2f5157e29ace1e45c4bf2bd0cacb03cc276458b1c4a21c217e73d0bc4e95c7"
+    },
+    {
+      "path": "left_hand.xml",
+      "sha256": "aed631597451a7fe4e81f26887ddb07634dc9500c896f19308e1a531cdf31488"
+    },
+    {
+      "path": "right_hand.png",
+      "sha256": "62a4a5b6b7919ecf45f21562a695c120673e0169ae5d55e872585905c1b7ba29"
+    },
+    {
+      "path": "right_hand.xml",
+      "sha256": "9d8f25c38bdb60617f378c07b7e71f97306471353c81bf281eb9943f3f2340d8"
+    },
+    {
+      "path": "scene_left.xml",
+      "sha256": "2108f237852073a5a76cf8ede77c282d7ad16885da98b0f9d9b58988c1f136b2"
+    },
+    {
+      "path": "scene_right.xml",
+      "sha256": "1081fba90e532543a2f69910d65c4ddb0e0b0eedec8673cf28764bfa1b17592a"
+    }
+  ],
+  "license": "MIT",
+  "entrypoint": {
+    "path": "/home/horde/.cache/newton/mujoco_menagerie_leap_hand_547fbb86_da76818e/leap_hand/right_hand.xml",
+    "sha256": "9d8f25c38bdb60617f378c07b7e71f97306471353c81bf281eb9943f3f2340d8",
+    "bytes": 22118
+  },
+  "license_file": {
+    "path": "/home/horde/.cache/newton/mujoco_menagerie_leap_hand_547fbb86_da76818e/leap_hand/LICENSE",
+    "sha256": "5a91c3d709c2ee3a71f166b46e3208cebd83c0c7a870746c729b31a01f156984",
+    "bytes": 1062
+  },
+  "license_notice": "Copyright 2023 Ananye Agarwal\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \u201cSoftware\u201d), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \u201cAS IS\u201d, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n",
+  "preview": "cached_leap.png",
+  "dimensions_m": [
+    0.23255494236946106,
+    0.23965299129486084,
+    0.06320742517709732
+  ],
+  "bounds_m": [
+    [
+      -0.10086902230978012,
+      -0.13886012136936188,
+      0.0
+    ],
+    [
+      0.13168592751026154,
+      0.10079286247491837,
+      0.06320742517709732
+    ]
+  ],
+  "vertex_count": 225664,
+  "triangle_count": 454234,
+  "preview_geometry_sha256": "6104ada30b8dffd2588c4bf2550cd66c4140fa1994208a87e9044d66ed2baa0e",
+  "preview_pose": "imported joint rest pose",
+  "preview_disclosure": "static imported geometry; no simulation or material qualification",
+  "body_count": 17,
+  "joint_count": 17,
+  "shape_count": 88
+}

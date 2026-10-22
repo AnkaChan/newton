@@ -1,0 +1,306 @@
+{
+  "name": "franka_fr3_hand",
+  "status": "cached, import and grasp qualification separate",
+  "directory": "/home/horde/.cache/newton/newton-assets_franka_emika_panda_6653f28a_f8fb7abc/franka_emika_panda",
+  "cache_revision_suffix": "f8fb7abc",
+  "units": "m (robot convention; verify importer)",
+  "source": "https://github.com/newton-physics/newton-assets",
+  "source_revision": "f8fb7abcbeba2318814a74f3eeb02780ad7925d6",
+  "source_tree_sha256": "351b1bfb34beb88c857dd34da06693df28f305de8e5a82e255fa2155c196c02b",
+  "source_files": [
+    {
+      "path": "LICENSE",
+      "sha256": "4b25434e6ec2012e28a484f1d7924a0fd1a8bf232c2be2d50d584d299d04d6d6"
+    },
+    {
+      "path": "README.md",
+      "sha256": "3d68f328ece69a5c91272f2663bc0ca33e8f82507de902d660f8d6c064ffa443"
+    },
+    {
+      "path": "fep3.png",
+      "sha256": "cb4daf99163f531e2d726227d59390015838ad8536cd224e4ee487bd05910525"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/hand.stl",
+      "sha256": "94493e94f30fe940f2c8ca2f155c3bbe67bbff406d3edf5e261670d2f0f6e2ed"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link0.stl",
+      "sha256": "dfc6d94330de8ddb005b311bfdba9f3b8e1aa7c256b71592ee7ff32cb9a9a5aa"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link1.stl",
+      "sha256": "e41a39a94108fcf56aacff603fc91ec80541f4c1af17b51a0de5617f5566e6d2"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link2.stl",
+      "sha256": "370f7605a0fae3529db169ded50f52f171024aa792d4d773bc84197301f6a039"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link3.stl",
+      "sha256": "0a8d638b9349c6c0eefc4e888636ac4838c4b27170f18a51699321118af709c1"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link4.stl",
+      "sha256": "0180ebb5772ec9840cb049750cffb29a9ddc90311752a16ea34757782ef9e48d"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link5.stl",
+      "sha256": "dd17e688c7870e722283525879643d53a74c0024d328b0e14b034b54c8b6c31a"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link6.stl",
+      "sha256": "20b768e99a0e0440b5754dcca108016434e57937cc356acd9c352ccd3cb27f77"
+    },
+    {
+      "path": "meshes/robot_arms/fer/collision/link7.stl",
+      "sha256": "92ac6afcf7574c034d3170d8a68e95ac9048ab9d0dd5bbd8311b86e551b9ab1c"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/finger.dae",
+      "sha256": "12c7bc9b55ffd0d1d0e3442d3e213ecc4fbebbced15259a20195af464f871fcd"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/hand.dae",
+      "sha256": "1b50601d3157f810176aba6db7164d6bdb4ec8b6546a8a725baba2fa2a21c58a"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link0.dae",
+      "sha256": "a7f5e5a0143e423ffb5ec1aeaa1cf2ab389ac843d74d8c4ddbebcb1a5ae5a279"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link1.dae",
+      "sha256": "92bc7949d546c2e34a7f1af54df7b4f91c34d3012a74c6133020013a544cfd74"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link2.dae",
+      "sha256": "e5427e7e0c5f2f0de631650347b7e4e2acef40b8b8d6cc52d98e055bba422da7"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link3.dae",
+      "sha256": "feca6e5e97002d454eb1b6482bf07e2574fcf066b8a3cfe81f64e25a23d40573"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link4.dae",
+      "sha256": "1ef9069b94d0d26fbf166654789559006d9ff61ae6de056956b469886697ce70"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link5.dae",
+      "sha256": "9e3f45fd1a7366949e8e8aa25cee6f90842793276e2d62ac4489f6c58c7f6376"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link6.dae",
+      "sha256": "3b55327b084952b49beb6f1f730494f16de6bd4d4b5464cbf1d4f3cd590162b7"
+    },
+    {
+      "path": "meshes/robot_arms/fer/visual/link7.dae",
+      "sha256": "5fa145c2c900a3f4c2b328e6ac2e642b7d78461b88f8d19eb9908baa4aa75f79"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link0.stl",
+      "sha256": "dfc6d94330de8ddb005b311bfdba9f3b8e1aa7c256b71592ee7ff32cb9a9a5aa"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link1.stl",
+      "sha256": "e41a39a94108fcf56aacff603fc91ec80541f4c1af17b51a0de5617f5566e6d2"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link2.stl",
+      "sha256": "370f7605a0fae3529db169ded50f52f171024aa792d4d773bc84197301f6a039"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link3.stl",
+      "sha256": "0a8d638b9349c6c0eefc4e888636ac4838c4b27170f18a51699321118af709c1"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link4.stl",
+      "sha256": "0180ebb5772ec9840cb049750cffb29a9ddc90311752a16ea34757782ef9e48d"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link5.stl",
+      "sha256": "dd17e688c7870e722283525879643d53a74c0024d328b0e14b034b54c8b6c31a"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link6.stl",
+      "sha256": "20b768e99a0e0440b5754dcca108016434e57937cc356acd9c352ccd3cb27f77"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/collision/link7.stl",
+      "sha256": "92ac6afcf7574c034d3170d8a68e95ac9048ab9d0dd5bbd8311b86e551b9ab1c"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link0.dae",
+      "sha256": "b529bf0dfc931aeaa7b8e43d4f3478cc7c7b962aa8044dee1562551be8daeed3"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link1.dae",
+      "sha256": "11cb8b23bed1da8e363799de00bed93695fb97c4dc431d6f84c7bc6ff7a3e556"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link2.dae",
+      "sha256": "69c495376f1f143398a4b861eb39d7624663992e77760f6ceb6554f07bb1c334"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link3.dae",
+      "sha256": "04dabc8f8eda357bea8ea028f6659e05ddd8511db606646bad1d95a98a5e6662"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link4.dae",
+      "sha256": "128308873e1b5ce8ed3e8a641fd4b97a99720f5476d1e4bf264e39bc77fd481e"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link5.dae",
+      "sha256": "769aa34d986ee7b1f226d1045fbf97a654e4d864de408912d3129e269ef61e65"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link6.dae",
+      "sha256": "da70f3303e61d0b3402ee553a60f6653104257b64bcf07dd9a031149de1c77c4"
+    },
+    {
+      "path": "meshes/robot_arms/fp3/visual/link7.dae",
+      "sha256": "e141040c6b74cec011f189f7b5b9751ec3e6c4b649affc8d50072df2f4d6df7a"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link0.stl",
+      "sha256": "dfc6d94330de8ddb005b311bfdba9f3b8e1aa7c256b71592ee7ff32cb9a9a5aa"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link1.stl",
+      "sha256": "e41a39a94108fcf56aacff603fc91ec80541f4c1af17b51a0de5617f5566e6d2"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link2.stl",
+      "sha256": "370f7605a0fae3529db169ded50f52f171024aa792d4d773bc84197301f6a039"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link3.stl",
+      "sha256": "0a8d638b9349c6c0eefc4e888636ac4838c4b27170f18a51699321118af709c1"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link4.stl",
+      "sha256": "0180ebb5772ec9840cb049750cffb29a9ddc90311752a16ea34757782ef9e48d"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link5.stl",
+      "sha256": "dd17e688c7870e722283525879643d53a74c0024d328b0e14b034b54c8b6c31a"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link6.stl",
+      "sha256": "20b768e99a0e0440b5754dcca108016434e57937cc356acd9c352ccd3cb27f77"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/collision/link7.stl",
+      "sha256": "92ac6afcf7574c034d3170d8a68e95ac9048ab9d0dd5bbd8311b86e551b9ab1c"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link0.dae",
+      "sha256": "3c52a112d1610d645934945b80ea8d9bb3d1635f345098480a33a537bd43224e"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link1.dae",
+      "sha256": "5c5846eabc714aefc82ef051a4d09c4fc1c092bca6258b1290227345dd217fcb"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link2.dae",
+      "sha256": "90a1bd38abdc53d0141719cd8e040f788db337b768a845bb6d53c5c52590498f"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link3.dae",
+      "sha256": "1c7a2a8124e39ad07096c0cce8461b0e650f6752900cfd777bf87c181e81749b"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link4.dae",
+      "sha256": "dd134cf13cdaced2b67739e4d9fe2ca011cc533936397d9f6303fc740424e2a2"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link5.dae",
+      "sha256": "cbcabd369e044eba3f1c2cab84b9ed2ebc1b2f424c6104ad9c5d7410e92fabfe"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link6.dae",
+      "sha256": "907b16fea84931f4881174234065bb647700abf105b432c3ff65360e0ad5cf8b"
+    },
+    {
+      "path": "meshes/robot_arms/fr3/visual/link7.dae",
+      "sha256": "b9d05ac502ff269b1323705de811d07a8eb9920ce711b32ee0497bf16b74989b"
+    },
+    {
+      "path": "meshes/robot_ee/cobot_pump/collision/cobot_pump.stl",
+      "sha256": "a00f8acc46fa2e1746a7543c3e964a01dc47c9c1fc941099f6cdb05472249db8"
+    },
+    {
+      "path": "meshes/robot_ee/cobot_pump/visual/cobot_pump.dae",
+      "sha256": "69a9418a508919585a414d5a7cbf95c3b9c190823455419a7dbbb9c20ea6e056"
+    },
+    {
+      "path": "meshes/robot_ee/franka_hand_black/collision/hand.stl",
+      "sha256": "94493e94f30fe940f2c8ca2f155c3bbe67bbff406d3edf5e261670d2f0f6e2ed"
+    },
+    {
+      "path": "meshes/robot_ee/franka_hand_black/visual/finger.dae",
+      "sha256": "12c7bc9b55ffd0d1d0e3442d3e213ecc4fbebbced15259a20195af464f871fcd"
+    },
+    {
+      "path": "meshes/robot_ee/franka_hand_black/visual/hand.dae",
+      "sha256": "dfb158b62f22a542f35e5d718f3819e016be5906cd539d041a555f4ef7b218aa"
+    },
+    {
+      "path": "meshes/robot_ee/franka_hand_white/collision/hand.stl",
+      "sha256": "94493e94f30fe940f2c8ca2f155c3bbe67bbff406d3edf5e261670d2f0f6e2ed"
+    },
+    {
+      "path": "meshes/robot_ee/franka_hand_white/visual/finger.dae",
+      "sha256": "12c7bc9b55ffd0d1d0e3442d3e213ecc4fbebbced15259a20195af464f871fcd"
+    },
+    {
+      "path": "meshes/robot_ee/franka_hand_white/visual/hand.dae",
+      "sha256": "1b50601d3157f810176aba6db7164d6bdb4ec8b6546a8a725baba2fa2a21c58a"
+    },
+    {
+      "path": "urdf/fr3.urdf",
+      "sha256": "79f761a5322d64ab6e7c9827d5e57efc593ecffe55522b5bbcc3c700772bd217"
+    },
+    {
+      "path": "urdf/fr3_franka_hand.urdf",
+      "sha256": "2a270e19a9b9c7ca5eb62ec9d503d779281605b6bba881f5ac6e8090aa382497"
+    }
+  ],
+  "license": "Apache-2.0",
+  "entrypoint": {
+    "path": "/home/horde/.cache/newton/newton-assets_franka_emika_panda_6653f28a_f8fb7abc/franka_emika_panda/urdf/fr3_franka_hand.urdf",
+    "sha256": "2a270e19a9b9c7ca5eb62ec9d503d779281605b6bba881f5ac6e8090aa382497",
+    "bytes": 15803
+  },
+  "license_file": {
+    "path": "/home/horde/.cache/newton/newton-assets_franka_emika_panda_6653f28a_f8fb7abc/franka_emika_panda/LICENSE",
+    "sha256": "4b25434e6ec2012e28a484f1d7924a0fd1a8bf232c2be2d50d584d299d04d6d6",
+    "bytes": 12926
+  },
+  "license_notice": "\n                                 Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the purposes\n      of this License, Derivative Works shall not include works that remain\n      separable from, or merely link (or bind by name) to the interfaces of,\n      the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including\n      the original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for reasonable and customary use in describing the\n      origin of the Work and reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Additional Liability. While redistributing\n      the Work or Derivative Works thereof, You may choose to offer,\n      and charge a fee for, acceptance of support, warranty, indemnity,\n      or other liability obligations and/or rights consistent with this\n      License. However, in accepting such obligations, You may act only\n      on Your own behalf and on Your sole responsibility, not on behalf\n      of any other Contributor, and only if You agree to indemnify,\n      defend, and hold each Contributor harmless for any liability\n      incurred by, or claims asserted against, such Contributor by reason\n      of your accepting any such warranty or additional liability.\n\n   END OF TERMS AND CONDITIONS\n\n   APPENDIX: How to apply the Apache License to your work.\n\n      To apply the Apache License to your work, attach the following\n      boilerplate notice, with the fields enclosed by brackets \"[]\"\n      replaced with your own identifying information. (Don't include\n      the brackets!)  The text should be enclosed in the appropriate\n      comment syntax for the file format. We also recommend that a\n      file or class name and description of purpose be included on the\n      same \"printed page\" as the copyright notice for easier\n      identification within third-party archives.\n\n   Copyright [yyyy] [name of copyright owner]\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.\n\n\n\n----------------------------\n\n\n\n  Software License Agreement (BSD License)\n\n  Redistribution and use in source and binary forms, with or without\n  modification, are permitted provided that the following conditions\n  are met:\n\n   * Redistributions of source code must retain the above copyright\n     notice, this list of conditions and the following disclaimer.\n   * Redistributions in binary form must reproduce the above\n     copyright notice, this list of conditions and the following\n     disclaimer in the documentation and/or other materials provided\n     with the distribution.\n   * Neither the name of Willow Garage, Inc. nor the names of its\n     contributors may be used to endorse or promote products derived\n     from this software without specific prior written permission.\n\n  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS\n  \"AS IS\" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT\n  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS\n  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE\n  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,\n  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,\n  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\n  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER\n  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT\n  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN\n  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE\n  POSSIBILITY OF SUCH DAMAGE.",
+  "preview": "cached_franka_fr3_hand.png",
+  "dimensions_m": [
+    0.3252614140510559,
+    0.259321391582489,
+    1.1149215698242188
+  ],
+  "bounds_m": [
+    [
+      -0.15407291054725647,
+      -0.12940001487731934,
+      0.0
+    ],
+    [
+      0.17118850350379944,
+      0.12992137670516968,
+      1.1149215698242188
+    ]
+  ],
+  "vertex_count": 185078,
+  "triangle_count": 240624,
+  "preview_geometry_sha256": "cbd0863d8f9f453f69c75540017f262e5d71be650b63da5d59812500c4350b0f",
+  "preview_pose": "imported joint rest pose",
+  "preview_disclosure": "static imported geometry; no simulation or material qualification",
+  "body_count": 14,
+  "joint_count": 14,
+  "shape_count": 54
+}

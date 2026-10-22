@@ -1,0 +1,3332 @@
+{
+  "schema_version": 1,
+  "selection": "38 current logical collection cases plus six distinct explicit robot-matrix exemplars. Historical failures and cube-jaw fixtures excluded; current failed recipes retained.",
+  "case_count": 44,
+  "criteria_note": "Applicability is declared before trials. Numerical acceptance limits remain governed by the comparison protocol; this registry does not convert smoke outcomes to passes.",
+  "hold_extension": "Extend only declared free-grasp stationary holds to60s. Keep frame interval/substeps/material/contact fixed. Analytic load/stack cases retain their declared windows.",
+  "baseline_cost": {
+    "simulated_seconds": 443.5687365953913,
+    "recorded_wall_seconds": 4553.42721991986,
+    "timing_scope": "Includes setup, compilation, audits, capture and encoding; not pure solver time."
+  },
+  "cases": [
+    {
+      "case_id": "r5_franka_patch_contact_v2",
+      "scene_id": "r5_franka_patch_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_patch",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup/carry observed; high local strain and incomplete release",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 123.09843662753701,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r7_h1_towel",
+      "scene_id": "r7_h1_towel",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_towel",
+      "runner": "h1",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {
+        "NEWTON_H1_START_MODE": "audited_open",
+        "NEWTON_H1_OPEN_OFFSET": ".00035",
+        "NEWTON_H1_GRASP_RECIPE": "recipes/h1/r7_h1_towel/grasp-recipe.json"
+      },
+      "replay": {
+        "manifest.json": {
+          "path": "recipes/h1/manifest.json",
+          "sha256": "e0ab06e04a9aff0a884f06ef4e8b00b6cf9c98c68285c59f7a9a7c3844bc496d"
+        }
+      },
+      "recorded_status": "Pickup and clean release observed; local stretch issue",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 15.53436829769565,
+      "recorded_wall_time_s": 276.86139392852783,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 6.442184148847824,
+      "hold_end": 7.942184148847824,
+      "stationary_windows": [
+        [
+          6.442184148847824,
+          7.942184148847824
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        15.53436829769565
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Use the H1 adapter and exact saved preparation/commands. Plain scene ID alone is insufficient for the recorded setup."
+      ],
+      "transport_windows": [
+        [
+          3.442184148847824,
+          6.442184148847824
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.942184148847824,
+          15.53436829769565
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r7_h1_sheet",
+      "scene_id": "r7_h1_sheet",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_sheet",
+      "runner": "h1",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {
+        "NEWTON_H1_START_MODE": "audited_open",
+        "NEWTON_H1_OPEN_OFFSET": ".001",
+        "NEWTON_H1_GRASP_RECIPE": "recipes/h1/r7_h1_sheet/grasp-recipe.json"
+      },
+      "replay": {
+        "manifest.json": {
+          "path": "recipes/h1/manifest.json",
+          "sha256": "e0ab06e04a9aff0a884f06ef4e8b00b6cf9c98c68285c59f7a9a7c3844bc496d"
+        }
+      },
+      "recorded_status": "Pickup and clean release observed; stretch issue",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 15.53436829769565,
+      "recorded_wall_time_s": 218.4002535827458,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 6.442184148847824,
+      "hold_end": 7.942184148847824,
+      "stationary_windows": [
+        [
+          6.442184148847824,
+          7.942184148847824
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        15.53436829769565
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Use the H1 adapter and exact saved preparation/commands. Plain scene ID alone is insufficient for the recorded setup."
+      ],
+      "transport_windows": [
+        [
+          3.442184148847824,
+          6.442184148847824
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.942184148847824,
+          15.53436829769565
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_trousers",
+      "scene_id": "r5_franka_trousers",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_trousers",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup and release observed; high local strain",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 188.35603043064475,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_dress",
+      "scene_id": "r5_franka_dress",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_dress",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup and release observed; high local strain",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 165.67011926323175,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_tshirt_contact_v2",
+      "scene_id": "r5_franka_tshirt_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_tshirt",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup and release observed; local stretch issue",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 152.0633127912879,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_skirt_contact_v2",
+      "scene_id": "r5_franka_skirt_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_skirt",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup observed; withdrawal snag and severe stretch issue",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 141.37225768715143,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_tote_contact_v2",
+      "scene_id": "r5_franka_tote_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_tote",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Partial lift; severe stretch and failed release",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 109.37659222632647,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_pouch_contact_v2",
+      "scene_id": "r5_franka_pouch_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_pouch",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup observed; failed release and local stretch issue",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 220.76137587055564,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r7_h1_gusset_bag",
+      "scene_id": "r7_h1_gusset_bag",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "r1_gusset_bag",
+      "runner": "h1",
+      "kwargs": {
+        "iterations": 100,
+        "substeps": 10
+      },
+      "env": {},
+      "replay": {
+        "manifest.json": {
+          "path": "recipes/h1/manifest.json",
+          "sha256": "e0ab06e04a9aff0a884f06ef4e8b00b6cf9c98c68285c59f7a9a7c3844bc496d"
+        }
+      },
+      "recorded_status": "Prepared rim hold and clean release observed at 100 iterations; strain remains",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 100,
+      "duration_s": 13.1,
+      "recorded_wall_time_s": 424.82684068381786,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        13.1
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Use the H1 adapter and exact saved preparation/commands. Plain scene ID alone is insufficient for the recorded setup.",
+        "Prepared body-rim contact. No acquisition or handle-loop release claim. Only the 100-iteration control is selected."
+      ],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          13.1
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "j3_h1_jacket",
+      "scene_id": "j3_h1_jacket",
+      "family": "Robot manipulation",
+      "collection_group": "Cloth and garments",
+      "original_case": "j1_cached_jacket",
+      "runner": "h1",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 100
+      },
+      "env": {},
+      "replay": {
+        "manifest.json": {
+          "path": "recipes/h1/manifest.json",
+          "sha256": "e0ab06e04a9aff0a884f06ef4e8b00b6cf9c98c68285c59f7a9a7c3844bc496d"
+        }
+      },
+      "recorded_status": "Contact acquisition, full lift/carry/hold, placement and release observed; local strain caveat",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 100,
+      "duration_s": 21.5,
+      "recorded_wall_time_s": 1180.5807185657322,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 7.5,
+      "hold_end": 9.5,
+      "stationary_windows": [
+        [
+          7.5,
+          9.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        21.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Use the H1 adapter and exact saved preparation/commands. Plain scene ID alone is insufficient for the recorded setup."
+      ],
+      "transport_windows": [
+        [
+          3.0,
+          7.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          9.5,
+          21.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r6_franka_pad",
+      "scene_id": "r6_franka_pad",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_pad",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 47.205186408013105,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r6_allegro_block",
+      "scene_id": "r6_allegro_block",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_block",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 36.23887201026082,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r6_allegro_sphere",
+      "scene_id": "r6_allegro_sphere",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_sphere",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 37.69347948208451,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r6_franka_capsule",
+      "scene_id": "r6_franka_capsule",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_capsule",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 100
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 100,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 75.86798069626093,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r6_franka_torus",
+      "scene_id": "r6_franka_torus",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_torus",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 34.38031090050936,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r6_franka_branched",
+      "scene_id": "r6_franka_branched",
+      "family": "Robot manipulation",
+      "collection_group": "Soft bodies",
+      "original_case": "r1_solid_branched",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 39.63220601528883,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m3_franka_tote_empty",
+      "scene_id": "m3_franka_tote_empty",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_tote_empty",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Prepared hold and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 69.94961939379573,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m3_franka_tote_2",
+      "scene_id": "m3_franka_tote_2",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_tote_2",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Prepared hold and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 62.78017249703407,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m3_franka_tote_2_spheres",
+      "scene_id": "m3_franka_tote_2_spheres",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_tote_2_spheres_substeps16",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Prepared hold and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 65.30524794012308,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m3_franka_gusset_4",
+      "scene_id": "m3_franka_gusset_4",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_gusset_4",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Prepared hold and release observed; deformation measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 59.55619443207979,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.0,
+      "hold_end": 5.5,
+      "stationary_windows": [
+        [
+          4.0,
+          5.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          5.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m2_franka_pouch",
+      "scene_id": "m2_franka_pouch",
+      "family": "Robot manipulation",
+      "collection_group": "Bags and payloads",
+      "original_case": "m1_pouch_empty_substeps16",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 40
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Prepared hold, carry, and release observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 40,
+      "duration_s": 10.0,
+      "recorded_wall_time_s": 45.824288967996836,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 4.5,
+      "hold_end": 6.0,
+      "stationary_windows": [
+        [
+          4.5,
+          6.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        10.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          0.5,
+          4.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.0,
+          10.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "c6_crossed_cables_10substeps",
+      "scene_id": "c6_crossed_cables",
+      "family": "Cables",
+      "collection_group": "Cables",
+      "original_case": "c6_crossed_cables",
+      "runner": "cable",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 8
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Original loaded crossing and sliding observed",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 8,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 27.558502174913883,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.5,
+          2.5
+        ],
+        [
+          4.5,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "c7_cylinder_wrap_10substeps",
+      "scene_id": "c7_cylinder_wrap",
+      "family": "Cables",
+      "collection_group": "Cables",
+      "original_case": "c7_cylinder_wrap",
+      "runner": "cable",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 8
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Original cable wrap and end loading observed",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 8,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 26.56652607396245,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.0,
+          3.0
+        ],
+        [
+          7.0,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "c9_bundle_squeeze_withdraw",
+      "scene_id": "c9_bundle_squeeze_withdraw",
+      "family": "Robot manipulation",
+      "collection_group": "Cables",
+      "original_case": "c8_bundle_squeeze",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Squeeze, pull, and hand separation observed; trajectory variation",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 24,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 49.945708986371756,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.5,
+          4.5
+        ],
+        [
+          8.5,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical.",
+        "Original mass-zero pulling endpoint is an analytic fixture. No free-grasp retention criterion."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "c9_pile_pickup",
+      "scene_id": "c9_pile_pickup",
+      "family": "Robot manipulation",
+      "collection_group": "Cables",
+      "original_case": "c8_pile_pickup",
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Original cable pile: pickup and release observed",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 24,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 73.96240998059511,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": 4.5,
+      "hold_end": 6.5,
+      "stationary_windows": [
+        [
+          4.5,
+          6.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [
+        [
+          2.5,
+          4.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.5,
+          9.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s1_cloth_2_10substeps",
+      "scene_id": "s1_cloth_2",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_cloth_2",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Layer contact observed; motion measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 22.462109800428152,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s1_cloth_5_10substeps",
+      "scene_id": "s1_cloth_5",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_cloth_5",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Issue observed: residual cloth motion",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 14.831836890429258,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s1_cloth_10_10substeps",
+      "scene_id": "s1_cloth_10",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_cloth_10",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Issue observed: residual cloth motion",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 16.853215169161558,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s1_pads_2_10substeps",
+      "scene_id": "s1_pads_2",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_pads_2",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Layer contact observed; residual motion measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 9.763309203088284,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s1_pads_5_10substeps",
+      "scene_id": "s1_pads_5",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s1_pads_5",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 20
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Stack tips; residual motion measured",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 20,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 12.181814894080162,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s2_impact",
+      "scene_id": "s2_impact",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s2_impact",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Contact motion observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 8.126314107328653,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.2,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s2_lower",
+      "scene_id": "s2_lower",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s2_lower",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Contact motion observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 7.0,
+      "recorded_wall_time_s": 7.8749764412641525,
+      "material_path": "cloth_and_tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.3,
+          2.8
+        ],
+        [
+          3.0,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        7.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s3_cloth_10substeps",
+      "scene_id": "s3_cloth",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s3_cloth",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Issue observed: analytic free-fall discrepancy",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 10,
+      "duration_s": 0.6,
+      "recorded_wall_time_s": 3.6716598607599735,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [],
+      "dynamic_window": [
+        0.0,
+        0.6
+      ],
+      "applicability": {
+        "task_completion": false,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": false,
+        "dynamic_response": true,
+        "release": false,
+        "analytic_freefall": true,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      },
+      "notes": [
+        "Uniform-gravity proximity control; negligible strain is expected, so this is not an elasticity stress test."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      }
+    },
+    {
+      "case_id": "s3_pads_10substeps",
+      "scene_id": "s3_pads",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s3_pads",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Issue observed: analytic free-fall discrepancy",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 10,
+      "duration_s": 0.6,
+      "recorded_wall_time_s": 2.68330704793334,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [],
+      "dynamic_window": [
+        0.0,
+        0.6
+      ],
+      "applicability": {
+        "task_completion": false,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": false,
+        "dynamic_response": true,
+        "release": false,
+        "analytic_freefall": true,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      },
+      "notes": [
+        "Uniform-gravity proximity control; negligible strain is expected, so this is not an elasticity stress test."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": false,
+        "friction_separation": false,
+        "dynamic": true
+      }
+    },
+    {
+      "case_id": "s4_pads",
+      "scene_id": "s4_pads",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s4_pads",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Contact motion observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 9.0,
+      "recorded_wall_time_s": 11.107531927525997,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          1.8,
+          3.0
+        ],
+        [
+          4.4,
+          5.3
+        ],
+        [
+          7.5,
+          9.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        9.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s5_pack_4",
+      "scene_id": "s5_pack_4",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s5_pack_4",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Contact motion observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 8.0,
+      "recorded_wall_time_s": 11.995999097824097,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.5,
+          4.5
+        ],
+        [
+          6.5,
+          8.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        8.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s5_pack_8",
+      "scene_id": "s5_pack_8",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "s5_pack_8",
+      "runner": "soft",
+      "kwargs": {
+        "substeps": 8,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Issue observed: residual motion",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 8,
+      "substep_dt_s": 0.004166666666666667,
+      "iterations": 10,
+      "duration_s": 8.0,
+      "recorded_wall_time_s": 14.20240192860365,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          2.5,
+          4.5
+        ],
+        [
+          6.5,
+          8.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        8.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_franka_towel_contact_v2",
+      "scene_id": "r5_franka_towel_contact_v2",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup, carry, and release observed; severe local strain remains",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 112.80208329111338,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Explicit Franka-matrix exemplar; H1 towel supersedes it only in the original collection row."
+      ],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r2_franka_duck",
+      "scene_id": "r2_franka_duck",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 5
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Pickup and release observed",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666666,
+      "iterations": 5,
+      "duration_s": 16.2,
+      "recorded_wall_time_s": 118.998205460608,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 9.0,
+      "hold_end": 11.0,
+      "stationary_windows": [
+        [
+          9.0,
+          11.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        16.2
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Shipped example dependency; self-contact remains disabled. Preserve Featherstone/IK motion and nested soft_solver."
+      ],
+      "transport_windows": [
+        [
+          7.0,
+          9.0
+        ]
+      ],
+      "place_release_windows": [
+        [
+          11.0,
+          16.2
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m2_franka_cable",
+      "scene_id": "m2_franka_cable",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Cable acquisition, hold, and release observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 24,
+      "duration_s": 11.0,
+      "recorded_wall_time_s": 45.28019968047738,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": 4.8,
+      "hold_end": 6.8,
+      "stationary_windows": [
+        [
+          4.8,
+          6.8
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [
+        [
+          1.6,
+          4.8
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.8,
+          11.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r5_allegro_towel",
+      "scene_id": "r5_allegro_towel",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 30
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Full-size towel: prepared hold and release observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 30,
+      "duration_s": 11.5,
+      "recorded_wall_time_s": 137.81452100723982,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": true,
+      "hold_start": 5.5,
+      "hold_end": 7.0,
+      "stationary_windows": [
+        [
+          5.5,
+          7.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.5
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": false,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          1.5,
+          5.5
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.0,
+          11.5
+        ]
+      ],
+      "category_applicability": {
+        "grasp": false,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "r3_allegro_ground_sphere",
+      "scene_id": "r3_allegro_ground_sphere",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 15
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Ground grasp, hold, and release observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 15,
+      "duration_s": 10.0,
+      "recorded_wall_time_s": 29.22933253645897,
+      "material_path": "tets",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": 6.6,
+      "hold_end": 7.5,
+      "stationary_windows": [
+        [
+          6.6,
+          7.5
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        10.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [],
+      "transport_windows": [
+        [
+          4.0,
+          6.6
+        ]
+      ],
+      "place_release_windows": [
+        [
+          7.5,
+          10.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "m2_allegro_cable",
+      "scene_id": "m2_allegro_cable",
+      "family": "Robot manipulation",
+      "collection_group": "Robot matrix exemplar",
+      "original_case": null,
+      "runner": "manipulation",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 24
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Cable acquisition, hold, and release observed",
+      "frame_dt_s": 0.03333333333333333,
+      "substeps": 10,
+      "substep_dt_s": 0.003333333333333333,
+      "iterations": 24,
+      "duration_s": 11.0,
+      "recorded_wall_time_s": 19.71436395868659,
+      "material_path": "rod_bodies_only",
+      "elasticity_treatment_applicable": false,
+      "initial_hold_prepared": false,
+      "hold_start": 4.8,
+      "hold_end": 6.8,
+      "stationary_windows": [
+        [
+          4.8,
+          6.8
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        11.0
+      ],
+      "applicability": {
+        "task_completion": true,
+        "grasp_acquisition": true,
+        "grasp_retention": true,
+        "grasp_slip": true,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": true,
+        "analytic_freefall": false,
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      },
+      "notes": [
+        "Particle tri/tet elasticity treatment is a structural no-op; keep rigid contact and rod-joint settings identical."
+      ],
+      "transport_windows": [
+        [
+          1.6,
+          4.8
+        ]
+      ],
+      "place_release_windows": [
+        [
+          6.8,
+          11.0
+        ]
+      ],
+      "category_applicability": {
+        "grasp": true,
+        "hold": true,
+        "transport": true,
+        "place_release": true,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": true,
+        "dynamic": false
+      }
+    }
+  ]
+}
