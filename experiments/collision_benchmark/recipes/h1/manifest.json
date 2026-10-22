@@ -1,0 +1,180 @@
+{
+  "schema": 1,
+  "scope": "Exact original scene source and numerical recipe values. Shared helpers use portable asset paths; all runtime helper/source hashes enter the common-start cache identity. No smoke state or solver history is shipped.",
+  "cases": {
+    "j3_h1_jacket": {
+      "original_record": "smoke-artifacts/scenes/j3_h1_jacket",
+      "files": {
+        "scene-source.py": "8e6e9fbcfb3147f972bff2daae0713f6d2aefe406b02ba7c06c6af64ae6214d9"
+      },
+      "original_source_sha256": {
+        "scene-source.py": "8e6e9fbcfb3147f972bff2daae0713f6d2aefe406b02ba7c06c6af64ae6214d9"
+      },
+      "original_helper_sha256": {
+        "experiments/collision_benchmark/jacket_h1_scene.py": "8e6e9fbcfb3147f972bff2daae0713f6d2aefe406b02ba7c06c6af64ae6214d9",
+        "experiments/collision_benchmark/h1_gripper.py": "93f46d1cc6689aa3beef751a7f136f07600392da6bcce91ab5cdedd84dcb235d",
+        "experiments/collision_benchmark/jacket_asset.py": "e2cf1f304fd0797f564aaceda675bae62c936c67af65409b75ca6567e50bb44d",
+        "experiments/collision_benchmark/jacket_diagnostics.py": "a1c91815ae9a8408f86dfea99a395c59319087bc3c97f0bd8561ac5428ed0d79",
+        "experiments/collision_benchmark/run_smoke.py": "04b3199fd7d92ab713266745944b43e3958866dac219396e44f91781bf72da9d",
+        "experiments/collision_benchmark/manipulation.py": "140cce71b3ea6616ca36c60b0c57249739d2ebc46ea584424b77b66f52cbdb5f",
+        "experiments/collision_benchmark/assets.py": "03ef8d21e30b201283fbf32fa03de1d839a2ea44f093f94377aa76b77c152b41"
+      },
+      "native_geometry_sha256": "5aaf165379f3b3bfab613c05719ea98da3e73dc16252873a852db5d33294b8e8",
+      "original_semantics_sha256": {
+        "scene-source.py": "b023369b78a608698587a1dfd3bae59c741aa586773ba43aebe4b048d8e83e12"
+      }
+    },
+    "r7_h1_sheet": {
+      "original_record": "smoke-artifacts/scenes/r7_h1_sheet",
+      "files": {
+        "h1_bag_scenes.py": "4965c53d812aa6e540c10ee0af2a819bf6430d4cdbd3fbd5c6e03ee022516939",
+        "h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "cloth_h1_scenes.py": "c3d8cf0244aec140edc1fc718d367e1277a66b8b9405b5de907b0bd79c4bafe9",
+        "grasp-recipe.json": "ee184120ff83f6094d0ce4c83ee644852aa94a3626b46dd151cb511d6400277e"
+      },
+      "original_source_sha256": {
+        "h1_bag_scenes.py": "4965c53d812aa6e540c10ee0af2a819bf6430d4cdbd3fbd5c6e03ee022516939",
+        "h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "cloth_h1_scenes.py": "c3d8cf0244aec140edc1fc718d367e1277a66b8b9405b5de907b0bd79c4bafe9",
+        "grasp-recipe.json": "ee184120ff83f6094d0ce4c83ee644852aa94a3626b46dd151cb511d6400277e"
+      },
+      "open_offset_m": 0.001,
+      "start_mode": "audited open after1.5s free settling; parked approach excluded",
+      "original_helper_sha256": {
+        "h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "cloth_h1_scenes.py": "c3d8cf0244aec140edc1fc718d367e1277a66b8b9405b5de907b0bd79c4bafe9",
+        "h1_bag_scenes.py": "4965c53d812aa6e540c10ee0af2a819bf6430d4cdbd3fbd5c6e03ee022516939",
+        "h1_gripper.py": "93f46d1cc6689aa3beef751a7f136f07600392da6bcce91ab5cdedd84dcb235d"
+      },
+      "original_semantics_sha256": {
+        "h1_bag_scenes.py": "edddf76521f0368cb098624c1cd408a6e984113a61fb964f709399c26b9addcc",
+        "h1_open_start_scene.py": "c5126f7828b475b89b7d87560ff691031e2d2eb6102958a349d32144d539490c",
+        "cloth_h1_scenes.py": "40a6333694b79ff7e28066832fe55705860545a3af8b47859c0140f541419787",
+        "grasp-recipe.json": "69915c43a562890007071ee34effd3c821a4d766c9b160e79261a0f018e40939"
+      }
+    },
+    "r7_h1_towel": {
+      "original_record": "smoke-artifacts/scenes/r7_h1_towel",
+      "files": {
+        "h1_bag_scenes.py": "77012b6dbd034a8c9645dac25c882bcde8ca6f89df9122e8e60a1f6099bf75ea",
+        "h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "cloth_h1_scenes.py": "c3d8cf0244aec140edc1fc718d367e1277a66b8b9405b5de907b0bd79c4bafe9",
+        "grasp-recipe.json": "ee184120ff83f6094d0ce4c83ee644852aa94a3626b46dd151cb511d6400277e"
+      },
+      "original_source_sha256": {
+        "h1_bag_scenes.py": "77012b6dbd034a8c9645dac25c882bcde8ca6f89df9122e8e60a1f6099bf75ea",
+        "h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "cloth_h1_scenes.py": "c3d8cf0244aec140edc1fc718d367e1277a66b8b9405b5de907b0bd79c4bafe9",
+        "grasp-recipe.json": "ee184120ff83f6094d0ce4c83ee644852aa94a3626b46dd151cb511d6400277e"
+      },
+      "open_offset_m": 0.00035,
+      "start_mode": "Audited open pose after 1.5 s free settling. Parked approach excluded.",
+      "original_helper_sha256": {
+        "h1_bag_scenes.py": "77012b6dbd034a8c9645dac25c882bcde8ca6f89df9122e8e60a1f6099bf75ea",
+        "h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "h1_gripper.py": "93f46d1cc6689aa3beef751a7f136f07600392da6bcce91ab5cdedd84dcb235d",
+        "cloth_h1_scenes.py": "c3d8cf0244aec140edc1fc718d367e1277a66b8b9405b5de907b0bd79c4bafe9"
+      },
+      "original_semantics_sha256": {
+        "h1_bag_scenes.py": "9725770a1fd534ed81992dc9b50771660a29589103f3b15990384d0a5e0602bc",
+        "h1_open_start_scene.py": "c5126f7828b475b89b7d87560ff691031e2d2eb6102958a349d32144d539490c",
+        "cloth_h1_scenes.py": "40a6333694b79ff7e28066832fe55705860545a3af8b47859c0140f541419787",
+        "grasp-recipe.json": "69915c43a562890007071ee34effd3c821a4d766c9b160e79261a0f018e40939"
+      }
+    },
+    "r7_h1_gusset_bag": {
+      "original_record": "smoke-artifacts/scenes/r7_h1_gusset_bag",
+      "files": {
+        "h1_bag_scenes.py": "77012b6dbd034a8c9645dac25c882bcde8ca6f89df9122e8e60a1f6099bf75ea",
+        "record-scene.py": "910e0c4257bcfca7bf80ff584097658b47933c0a7b2c8ee9269eda9c3bbc8ace",
+        "grasp-recipe.json": "3088468b4f701045809a18d0e0fed0b03ab2f7024a27f00343fff490488212d0",
+        "setup.json": "43a8494898d0db7561d520c6b65dbb94526327a162a06ba9c583f2ec273edcbd"
+      },
+      "original_source_sha256": {
+        "source-snapshot/experiments/collision_benchmark/h1_bag_scenes.py": "77012b6dbd034a8c9645dac25c882bcde8ca6f89df9122e8e60a1f6099bf75ea",
+        "record-scene.py": "7fac2dbe16853430b14c9a6d3269d024f0df71b1ff3bbc6674db51702a1e191c",
+        "grasp-recipe.json": "3088468b4f701045809a18d0e0fed0b03ab2f7024a27f00343fff490488212d0",
+        "setup.json": "43a8494898d0db7561d520c6b65dbb94526327a162a06ba9c583f2ec273edcbd"
+      },
+      "original_helper_sha256": {
+        "experiments/collision_benchmark/h1_bag_scenes.py": "77012b6dbd034a8c9645dac25c882bcde8ca6f89df9122e8e60a1f6099bf75ea",
+        "experiments/collision_benchmark/h1_gripper.py": "93f46d1cc6689aa3beef751a7f136f07600392da6bcce91ab5cdedd84dcb235d",
+        "experiments/collision_benchmark/h1_open_start_scene.py": "591667890a8e61c1e9aaa2e5074611057368634afcdb928b63bf2fd09f3e390d",
+        "experiments/collision_benchmark/assets.py": "03ef8d21e30b201283fbf32fa03de1d839a2ea44f093f94377aa76b77c152b41",
+        "experiments/collision_benchmark/cloth_robot_scenes.py": "60e00a33efa2a649f232b8f66d147aff93c8c0081562461443bd2afa0f413043",
+        "experiments/collision_benchmark/jacket_diagnostics.py": "a1c91815ae9a8408f86dfea99a395c59319087bc3c97f0bd8561ac5428ed0d79",
+        "experiments/collision_benchmark/run_smoke.py": "04b3199fd7d92ab713266745944b43e3958866dac219396e44f91781bf72da9d",
+        "experiments/collision_benchmark/manipulation.py": "140cce71b3ea6616ca36c60b0c57249739d2ebc46ea584424b77b66f52cbdb5f",
+        "newton/_src/solvers/vbd/solver_vbd.py": "8f9e09417a2a0379e235e639327674678ac29d70631ca4c47c2e204e6e5a676a",
+        "newton/_src/solvers/vbd/rigid_vbd_kernels.py": "8477ba71d7b366f99b120d8a573d9ca2cc767759a91a0af20a0978294e61c4b6",
+        "newton/_src/solvers/vbd/particle_vbd_kernels.py": "2af7257b84282fb4b4affba3da8062b5bbc73a1884c69b912455739db1de97a6"
+      },
+      "original_semantics_sha256": {
+        "h1_bag_scenes.py": "9725770a1fd534ed81992dc9b50771660a29589103f3b15990384d0a5e0602bc",
+        "record-scene.py": "c1b77b6751c83454195f0a164fce67ddd93c1ddfb4a69cbf7810982e56e3dbd4",
+        "grasp-recipe.json": "8347900ba3678aa9ebbe6929ee17b1bf19fa372ac1940f3644c206c0ca62b92b",
+        "setup.json": "e374e3f77d702cf8313bb4d603b78b52d7eff979ce4180355ed5c58b1e417e5e"
+      }
+    }
+  },
+  "robot_asset_files": {
+    "urdf/h1_with_hand.urdf": "2acd19bb8d19bf4cc6bc749cb1d2aa0377e72adbc872af3e2c8a4ebeddc5e7e5",
+    "LICENSE": "84aac59fd3246e3ddc49d1387644e8fcf43b0def4f0b9fe687f372e90446df2d",
+    "meshes/left_hand_link.STL": "8bdf9e424ffcad03646a354fe5a4a08515e523c081070afabcadc9f5f03132e1",
+    "meshes/left_hand_link.dae": "92cbdfc08b727decdc8347075ef648e278b258b7c1ae9d707942967f6a9adee4",
+    "meshes/L_hand_base_link.STL": "33ab4e97801bd5421903a78f5977a44e477ae8653eaf32358d35633e465411e0",
+    "meshes/L_hand_base_link.dae": "b9a86e815797d4e231d9845957bfdbdcfe6b0e80d76a98d0b8afa80a403fd0f6",
+    "meshes/Link11_L.STL": "d87cb704d80de840555d0a393117d32f9bd5e91425e0458363e0a799aa4e5339",
+    "meshes/Link11_L.dae": "6f1e5240d9f533e55b908dc360242a27461dcfa3a46c8c782c096fef8da897c4",
+    "meshes/Link12_L.STL": "9f35b78a9cab1007ac8b73023a5862ed055d33951b5742f9a783997d38e99551",
+    "meshes/Link12_L.dae": "994d1d45f4b1900d9b25b67553016797b3a52ac764bcf192ae8d87f2625e60f5",
+    "meshes/Link13_L.STL": "7e93b55f2ae73fe0f62cd27e81d8a4620211068cb1c9b25e6414e802a37541ee",
+    "meshes/Link13_L.dae": "d845d855fbfafc3fee309e64ed4022a93d805e4d1fd14a813ad7ce29c4adc838",
+    "meshes/Link14_L.STL": "b677bcdcddcd90ff4b005f83daa9e50eb4003d5e67ea4eeefbf857718716c164",
+    "meshes/Link14_L.dae": "0dad5198cccf03192e611471dff61859446da2d75cd343c5343881e7517910ca",
+    "meshes/Link15_L.STL": "8c601e7aa8e1c91310a75190dfb6b95a8dc981b707e5f104f9ca9ecbea118b34",
+    "meshes/Link15_L.dae": "8e538775660ce176dda1f4eec051e9c05e464282e34db320646f21d46fca68a2",
+    "meshes/Link16_L.STL": "7d8508c65db44e2349f37e8ab4c057d204a40093d4733897ae5b51075b00f5e9",
+    "meshes/Link16_L.dae": "2ea4dc7d6d652c24121b821feef326c02b9cf217cc79959b43ef80b31ea52704",
+    "meshes/Link17_L.STL": "ca2a68fed635eca290b234fbdc649779036ba5bac753addcb7ce6a086ad95949",
+    "meshes/Link17_L.dae": "c4ce49aeb921a3b8ecfd84ca52be3e537d4de34d076ed21e02e02a04c8cf80c7",
+    "meshes/Link18_L.STL": "9425aea7ebbf6d1dfb2eb0714fb44dfaea6b6a81c71d6e96c8d3950f636dfa62",
+    "meshes/Link18_L.dae": "8ea4eec39dc8edc66edca7f0b61e91c8224c9ebc6682140a99bd27a7e21b6b85",
+    "meshes/Link19_L.STL": "cbb256a70c17e21c995df66807f0755dc136d0312df245112d6d4bfcd29c43a4",
+    "meshes/Link19_L.dae": "133fcf44c2fe80bbdc9251564319b8ec4c879071e5f4a7767c9c679d177c3ae8",
+    "meshes/Link20_L.STL": "e9145af7a515bce4c1c06d16b5be8900ec3f8375fc8e34d371315ce76f600877",
+    "meshes/Link20_L.dae": "5e6661ad5a866220e9fb6a27d91f9d6b3dd71777f9bb94b9577f6745860027c8",
+    "meshes/Link21_L.STL": "180ab4ac01dab60407d0b33819883eb0ec869e4d4f349f786972135c7114fc0d",
+    "meshes/Link21_L.dae": "59280fa877b8ddca4e6f44d528b869588aa8cb130c67f20f40200c239d745427",
+    "meshes/Link22_L.STL": "5e64ea976ecf08c46e8cb80a5dd56ee3e8c5f36a0573ab3c69160d9337f941e1",
+    "meshes/Link22_L.dae": "88f5113ee5f76f546aaf8bea202fcb8e5ddb4bbd004c2dbb4be04743303f2840",
+    "meshes/right_hand_link.STL": "8bdf9e424ffcad03646a354fe5a4a08515e523c081070afabcadc9f5f03132e1",
+    "meshes/right_hand_link.dae": "836372bb748c1d03535d11003c6734b05bbd3c3ba08b9523f318ff1e336f9617",
+    "meshes/R_hand_base_link.STL": "b4d84504242a99fa915c4ed5195ce4724c67cb94d9217cd4c254cfb5937ecf5c",
+    "meshes/R_hand_base_link.dae": "57ed7af9f4f32d673c525e5ac782dbee4193e4a377a62ba47be0e4ae775c328b",
+    "meshes/Link11_R.STL": "b49b6463f801f0402bac9c65bb989c4097f6d2c1fa1597ba560aedd640561778",
+    "meshes/Link11_R.dae": "632803c777fd87bcc830fcc4fa2f331fb475a225e37a2fe784cb6ef4db399da9",
+    "meshes/Link12_R.STL": "347212bdb22d80fb364dd889de934d6fbb935e38d1f24c682caed84f7b6ea8cb",
+    "meshes/Link12_R.dae": "7a207d35e8ce4daffd5d8c053fa5ad62ab2cefc1e55d2307ec45adc9a7fc0234",
+    "meshes/Link13_R.STL": "c157dfe5b666efb1c3d51342e56f5caad2fc350930ac21ee1e02d956c1034ca3",
+    "meshes/Link13_R.dae": "f13da55f7af316e2ec6c0f9023c730bbd326d5f1b2761cd5f21ef091d49301a4",
+    "meshes/Link14_R.STL": "564aa8c3d2ff0e51b75736a8b01b4c309c7098582a424ea1391ccb75125519d8",
+    "meshes/Link14_R.dae": "d64b5e3dd4abd8d0df38984c36fc40dfcdced2131b9708d306beb5a95d5d5726",
+    "meshes/Link15_R.STL": "09c120f7fb7761aa97d89240cd8cb8e30c40ee60093cbb8b1c2e13a68a8e3845",
+    "meshes/Link15_R.dae": "3b01c7596b9d40ec16aacb4c4ea3f411ac2cbf41f367f35c5e6a7820caed717f",
+    "meshes/Link16_R.STL": "6942ada1189cdf442124c6b8935f3e3a3ae310092a3a1414fdeb0bd6d23578bb",
+    "meshes/Link16_R.dae": "cf87d701bad8644a3a625991d6359ca3f75b3753e20591582c3dfdef49d9d775",
+    "meshes/Link17_R.STL": "36fc62c609800ce6d4521ae6f3c4c9b8a732be28654f32f04893696c17e6930c",
+    "meshes/Link17_R.dae": "966efdfff156534161960e7aafd7cc902d2be0258df3030310bae99e9aeac3a2",
+    "meshes/Link18_R.STL": "9711fac7df0c09a372e1529f74b9d506d37abf3ebc3241d976ad45e5ee7e2d69",
+    "meshes/Link18_R.dae": "639eb062eca64965900d2a87295a7233d84f89f7b1546da61547bb1f1e2b0727",
+    "meshes/Link19_R.STL": "46619bd6a887615d7dfe850d39a6f5d8f8c5ecfa9429c567338f3a659a5d4d75",
+    "meshes/Link19_R.dae": "1d479e3c6afa82ecb69844aee16663d7efffd067ebd008364c7fad9c6b67871e",
+    "meshes/Link20_R.STL": "a517debff6b924c22ae0f87dbb6aac199a1f130c7fef353a7d659e365f30b1f4",
+    "meshes/Link20_R.dae": "5d3dcfca518d22648287bab8b2b7b2fc4b1322d54bbd6a316df020a1e1542234",
+    "meshes/Link21_R.STL": "ed0a29d2376e8874f724bc2c20384eeec93d8268e59bb8c45628335f7ab6742e",
+    "meshes/Link21_R.dae": "d530c1b6620dc67d916b92cafa93b6dc9ad418badcf4fa50ead6bcef25c0cc88",
+    "meshes/Link22_R.STL": "1aa3fb46f689251ee38f5262b71364c680f70d1ad1dd9c6f1cae8c098b0e8422",
+    "meshes/Link22_R.dae": "b1687445cca2a406500f8a333d5b0515d53dde84420c1d90caefdaec16f52a1a"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "pr_number": 4830,
+  "url": "https://github.com/newton-physics/newton/pull/4830",
+  "head": "d1b848a043022ac0e55cee31d3117b599399f8c0",
+  "base": "9c28c80c1ba134e54c4ee63cbbf251cf3eec7adc",
+  "upstream_diff_sha256": "2b1340f21361ecbb1c27c1e2578226155c725f79347d2e8b94d0f1d3f4adefa7",
+  "original_adapter_sha256": "99a5a818e5e3ff42251cbdc1b2f4d8e0a769d18a897e137d9a6161a5221ca63b",
+  "original_task_observer_sha256": "3dc1bf87148b4021c7ee97447155832948c8c0e3bdb5ecc17744099618e37bbb",
+  "scope": "particle_vbd, generated elasticity tile, original rigid body solve and joint dual kernels. Same unique module organization in both arms. No equations backported.",
+  "upstream_changes": [
+    {
+      "filename": "newton/_src/solvers/vbd/particle_vbd_kernels.py",
+      "patch": "@@ -48,7 +48,8 @@\n )\n \n # TODO: Grab changes from Warp that has fixed the backward pass\n-wp.set_module_options({\"enable_backward\": False})\n+# fast math also approximates sin/cos/tan/exp/log/pow; keep those out of this module\n+wp.set_module_options({\"enable_backward\": False, \"fast_math\": True})\n \n VBD_DEBUG_PRINTING_OPTIONS = {\n     # \"elasticity_force_hessian\",\n@@ -2510,7 +2511,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_\n     # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.\n     assert TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE == 16\n \n-    @wp.kernel(module=\"unique\")\n+    @wp.kernel(module=\"unique\", enable_backward=False, module_options={\"fast_math\": True})\n     def solve_elasticity_tile_kernel(\n         dt: float,\n         particle_ids_in_color: wp.array[wp.int32],\n@@ -2711,8 +2712,6 @@ def solve_elasticity_tile_kernel(\n                 )\n                 particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total\n \n-    # module=\"unique\" kernels do not inherit this file's module options.\n-    wp.set_module_options({\"enable_backward\": False}, module=solve_elasticity_tile_kernel.module)\n     return solve_elasticity_tile_kernel\n \n "
+    },
+    {
+      "filename": "newton/_src/solvers/vbd/rigid_vbd_kernels.py",
+      "patch": "@@ -62,7 +62,10 @@\n \"\"\"Small length tolerance (e.g., segment length checks)\"\"\"\n \n _USE_SMALL_ANGLE_APPROX = wp.constant(True)\n-\"\"\"If True use first-order small-angle rotation approximation; if False use closed-form rotation update\"\"\"\n+\"\"\"If True use first-order small-angle rotation approximation; if False use closed-form rotation update.\n+\n+The closed form needs accurate small-angle sin/cos, which the fast-math rigid kernels don't provide.\n+\"\"\"\n \n _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)\n \"\"\"Deadband threshold for hysteresis direction selection\"\"\"\n@@ -6243,7 +6246,8 @@ def compute_body_particle_contact_forces(\n def create_solve_rigid_body(has_tendons: bool):\n     \"\"\"Specialize the body solve to exclude tendon assembly for tendon-free models.\"\"\"\n \n-    @wp.kernel(module=\"unique\", enable_backward=False)\n+    # fast math: approximate sin/cos are inaccurate for small angles; keep them out of reachable code here\n+    @wp.kernel(module=\"unique\", enable_backward=False, module_options={\"fast_math\": True})\n     def solve_rigid_body(\n         dt: float,\n         body_ids_in_color: wp.array[wp.int32],\n@@ -6572,7 +6576,8 @@ def solve_rigid_body(\n     return solve_rigid_body\n \n \n-@wp.kernel\n+# fast math: approximate sin/cos are inaccurate for small angles; keep them out of reachable code here\n+@wp.kernel(module=\"unique\", enable_backward=False, module_options={\"fast_math\": True})\n def update_duals_joint(\n     # Inputs\n     joint_type: wp.array[int],"
+    },
+    {
+      "filename": "newton/_src/solvers/vbd/solver_vbd.py",
+      "patch": "@@ -961,6 +961,7 @@ def __init__(\n                 accumulate_body_body_contacts_per_body.module,\n                 compute_rigid_contact_forces.module,\n                 update_duals_body_body_contacts.module,\n+                update_duals_joint.module,\n             )\n             for module in rigid_modules:\n                 self._set_module_options(options, module=module)"
+    }
+  ]
+}

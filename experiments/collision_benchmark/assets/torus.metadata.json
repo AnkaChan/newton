@@ -1,0 +1,139 @@
+{
+  "name": "torus",
+  "family": "solid",
+  "units": "m",
+  "up_axis": "Z",
+  "source": "original procedural benchmark geometry",
+  "license": "Apache-2.0",
+  "generator_revision": 2,
+  "resolution": "medium",
+  "dimensions_m": [
+    0.07999999821186066,
+    0.07999999821186066,
+    0.019999999552965164
+  ],
+  "bounds_m": [
+    [
+      -0.03999999910593033,
+      -0.03999999910593033,
+      0.0
+    ],
+    [
+      0.03999999910593033,
+      0.03999999910593033,
+      0.019999999552965164
+    ]
+  ],
+  "vertex_count": 800,
+  "triangle_count": 1024,
+  "tet_count": 3072,
+  "geometry_sha256": "6423f67843f17329e887d020fd851616ee296fbf20b34c417f6dd74c7a65d18c",
+  "color_rgb": [
+    0.43,
+    0.65,
+    0.78
+  ],
+  "rest_shape": "generated geometry, no settling or simulated draping",
+  "landmarks": {
+    "top": [
+      14,
+      39,
+      64,
+      89,
+      114,
+      139,
+      164,
+      189,
+      214,
+      239,
+      264,
+      289,
+      314,
+      339,
+      364,
+      389,
+      414,
+      439,
+      464,
+      489,
+      514,
+      539,
+      564,
+      589,
+      614,
+      639,
+      664,
+      689,
+      714,
+      739,
+      764,
+      789
+    ],
+    "bottom": [
+      10,
+      35,
+      60,
+      85,
+      110,
+      135,
+      160,
+      185,
+      210,
+      235,
+      260,
+      285,
+      310,
+      335,
+      360,
+      385,
+      410,
+      435,
+      460,
+      485,
+      510,
+      535,
+      560,
+      585,
+      610,
+      635,
+      660,
+      685,
+      710,
+      735,
+      760,
+      785
+    ],
+    "left": [
+      422
+    ],
+    "right": [
+      22
+    ]
+  },
+  "synthetic_material": {
+    "density_kg_m3": 100.0,
+    "particle_radius_m": 0.001,
+    "k_mu_pa": 20000.0,
+    "k_lambda_pa": 20000.0,
+    "k_damp_pa_s": 0.01
+  },
+  "construction": "periodic swept disk grid with major radius 0.03 m and tube radius 0.01 m",
+  "validation": {
+    "finite": true,
+    "min_triangle_area_m2": 6.600884693000668e-06,
+    "surface_area_m2": 0.011713033259407809,
+    "min_triangle_angle_degrees": 23.2322031961056,
+    "triangles_with_angle_below_10_degrees": 0,
+    "nonmanifold_edges": 0,
+    "boundary_edges": 0,
+    "inconsistent_winding_edges": 0,
+    "connected_components": 1,
+    "min_tet_volume_m3": 2.2219965128148306e-09,
+    "volume_m3": 5.719296939245851e-05,
+    "nonpositive_tets": 0,
+    "valid": true
+  },
+  "npz": "torus.npz",
+  "obj": "torus.obj",
+  "preview": "torus.png"
+}

@@ -20,6 +20,8 @@ repos:
     hooks:
       - id: check-added-large-files
         args: [--maxkb=500]
+        # Keep the measured native jacket mesh unchanged (676 KiB).
+        exclude: ^experiments/collision_benchmark/assets/cached_jacket_native\.npz$
       - id: check-case-conflict
       - id: check-illegal-windows-names
       - id: check-json

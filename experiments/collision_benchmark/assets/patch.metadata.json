@@ -1,0 +1,112 @@
+{
+  "name": "patch",
+  "family": "cloth",
+  "units": "m",
+  "up_axis": "Z",
+  "source": "original procedural benchmark geometry",
+  "license": "Apache-2.0",
+  "generator_revision": 2,
+  "resolution": "medium",
+  "dimensions_m": [
+    0.10000000149011612,
+    0.0,
+    0.10000000149011612
+  ],
+  "bounds_m": [
+    [
+      -0.05000000074505806,
+      0.0,
+      0.0
+    ],
+    [
+      0.05000000074505806,
+      0.0,
+      0.10000000149011612
+    ]
+  ],
+  "vertex_count": 289,
+  "triangle_count": 512,
+  "tet_count": 0,
+  "geometry_sha256": "958b610c26454ab84e0981dd09f1826620ead52d1cde1e4f20dc23043f0e1a0f",
+  "color_rgb": [
+    0.43,
+    0.65,
+    0.78
+  ],
+  "rest_shape": "generated geometry, no settling or simulated draping",
+  "landmarks": {
+    "top": [
+      272,
+      273,
+      274,
+      275,
+      276,
+      277,
+      278,
+      279,
+      280,
+      281,
+      282,
+      283,
+      284,
+      285,
+      286,
+      287,
+      288
+    ],
+    "bottom": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ],
+    "left": [
+      0
+    ],
+    "right": [
+      16
+    ]
+  },
+  "synthetic_material": {
+    "density_kg_m2": 0.25,
+    "particle_radius_m": 0.002,
+    "tri_ke": 1000.0,
+    "tri_ka": 1000.0,
+    "tri_kd": 0.01,
+    "edge_ke": 0.01,
+    "edge_kd": 0.001
+  },
+  "construction": "single rectangular cloth panel",
+  "grid": [
+    16,
+    16
+  ],
+  "validation": {
+    "finite": true,
+    "min_triangle_area_m2": 1.953122438863586e-05,
+    "surface_area_m2": 0.010000000298023226,
+    "min_triangle_angle_degrees": 44.999965849041935,
+    "triangles_with_angle_below_10_degrees": 0,
+    "nonmanifold_edges": 0,
+    "boundary_edges": 64,
+    "inconsistent_winding_edges": 0,
+    "connected_components": 1,
+    "valid": true
+  },
+  "npz": "patch.npz",
+  "obj": "patch.obj",
+  "preview": "patch.png"
+}

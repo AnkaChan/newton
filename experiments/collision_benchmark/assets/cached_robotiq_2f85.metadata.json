@@ -1,0 +1,130 @@
+{
+  "name": "robotiq_2f85",
+  "status": "cached, import and grasp qualification separate",
+  "directory": "/home/horde/.cache/newton/mujoco_menagerie_robotiq_2f85_v4_9b8e32d8_da76818e/robotiq_2f85_v4",
+  "cache_revision_suffix": "da76818e",
+  "units": "m (robot convention; verify importer)",
+  "source": "https://github.com/google-deepmind/mujoco_menagerie",
+  "source_revision": "da76818e269b82289eba39808e2fb91d679d6994",
+  "source_tree_sha256": "722e8037f05b4ad9b1b1c07650a554bbfc597b55988c3f7c645f4bea35f8849a",
+  "source_files": [
+    {
+      "path": "2f85.png",
+      "sha256": "6cf63726e09cebdd980b38c38172a544edcaf237d70f3e9314b103261f4da7ea"
+    },
+    {
+      "path": "2f85.xml",
+      "sha256": "8d4a4f840ff5f928d56e387a8325d1f34437b35f72b82792e4d46f8de879e133"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "93fb3bc80be3c57eb8d094df25e961510076d1bfdbd10929692e8440ec0d71fa"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "3d5edd18d1e22a17666e9bb84270171ed5ac90b192d24e0177fd171708ea2316"
+    },
+    {
+      "path": "README.md",
+      "sha256": "deefa594ae97861719e1a09be132dc660629bb9f3c5a7b8b89055bed37117598"
+    },
+    {
+      "path": "assets/base.stl",
+      "sha256": "1019b87c1dcff4a08a2fdca2dfd4893d60a5e2fc53512c6b5fe2e372b75c9aa3"
+    },
+    {
+      "path": "assets/base_coupling.stl",
+      "sha256": "6a2517f9d6d78f89d9edb617fb93a279b4d52ac61c12d9cb743c701676eeb06d"
+    },
+    {
+      "path": "assets/c-a01-85-open.stl",
+      "sha256": "13ad73ef491f6f28b9ed6b8fbb3d6fb45896110ea7d415cda1689fc8daa5d925"
+    },
+    {
+      "path": "assets/coupler.stl",
+      "sha256": "54949f7355c35c976d854fb77272feb92d9201213e343a8852429556fc81d416"
+    },
+    {
+      "path": "assets/driver.stl",
+      "sha256": "baf8b4dde18ce59eeebc0928a289c69dccec9da81bb186e2838e2e304274e106"
+    },
+    {
+      "path": "assets/follower.stl",
+      "sha256": "28811d3651345dbb5f2020c67d3bd05f754b5e3e791e379c3c4d1d87418bb9c5"
+    },
+    {
+      "path": "assets/pad.stl",
+      "sha256": "c0f4d31e867a5b3634c102669b76ac5e8c026ede5fc645b751a5eb3d4bb0be02"
+    },
+    {
+      "path": "assets/robotiq_fts300.stl",
+      "sha256": "50be7b765c349abf102d81dc62d8816a39a6345d3e794dec505ec8d5a034b973"
+    },
+    {
+      "path": "assets/robotiq_fts300_base.stl",
+      "sha256": "c1f5aa91c33e900fb10be4d8cb5658d669fe48fdc5dbf2bf61ca03002953b0cf"
+    },
+    {
+      "path": "assets/robotiq_fts300_coupling.stl",
+      "sha256": "c45d18f0a7aa4a52582bb0eeae061f76902803965dbd7712990627b200eb667d"
+    },
+    {
+      "path": "assets/robotiq_fts300_top.stl",
+      "sha256": "4e9ca76b0b09c6871e4c4ffb5031a85c19db62e5734ba41d93622322629fc189"
+    },
+    {
+      "path": "assets/spring_link.stl",
+      "sha256": "56e9f28ce90841d654ab6d953161aeb62142b1459c210335d5862e7fcb281aab"
+    },
+    {
+      "path": "assets/tongue.stl",
+      "sha256": "2bd5df8a2132542703d40d94be36a990bbc3eabe070283232871147081348d52"
+    },
+    {
+      "path": "mjx_2f85.xml",
+      "sha256": "a8be05d166de27319fa85002ecb03bda1101318a2af7d3a1c0711dba26e8f51d"
+    },
+    {
+      "path": "scene.xml",
+      "sha256": "dbc7255f3e1a5539e59cffac3000a49f19aa3cae384061aa74ec787e6a5760ff"
+    }
+  ],
+  "license": "BSD-2-Clause",
+  "entrypoint": {
+    "path": "/home/horde/.cache/newton/mujoco_menagerie_robotiq_2f85_v4_9b8e32d8_da76818e/robotiq_2f85_v4/2f85.xml",
+    "sha256": "8d4a4f840ff5f928d56e387a8325d1f34437b35f72b82792e4d46f8de879e133",
+    "bytes": 9973
+  },
+  "license_file": {
+    "path": "/home/horde/.cache/newton/mujoco_menagerie_robotiq_2f85_v4_9b8e32d8_da76818e/robotiq_2f85_v4/LICENSE",
+    "sha256": "3d5edd18d1e22a17666e9bb84270171ed5ac90b192d24e0177fd171708ea2316",
+    "bytes": 1297
+  },
+  "license_notice": "Copyright (c) 2013, ROS-Industrial\nAll rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification,\nare permitted provided that the following conditions are met:\n\n  Redistributions of source code must retain the above copyright notice, this\n  list of conditions and the following disclaimer.\n\n  Redistributions in binary form must reproduce the above copyright notice, this\n  list of conditions and the following disclaimer in the documentation and/or\n  other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND\nANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED\nWARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE\nDISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR\nANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES\n(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;\nLOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON\nANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT\n(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS\nSOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.\n",
+  "preview": "cached_robotiq_2f85.png",
+  "dimensions_m": [
+    0.1545615941286087,
+    0.07500000298023224,
+    0.16224868595600128
+  ],
+  "bounds_m": [
+    [
+      -0.07728079706430435,
+      -0.03750000149011612,
+      0.0
+    ],
+    [
+      0.07728079706430435,
+      0.03750000149011612,
+      0.16224868595600128
+    ]
+  ],
+  "vertex_count": 85071,
+  "triangle_count": 170282,
+  "preview_geometry_sha256": "d4eeff7b61b09231a97b787c97e6c44b4879c978f5b79d05bdb145b5f905a0e6",
+  "preview_pose": "imported joint rest pose",
+  "preview_disclosure": "static imported geometry; no simulation or material qualification",
+  "body_count": 11,
+  "joint_count": 13,
+  "shape_count": 28
+}

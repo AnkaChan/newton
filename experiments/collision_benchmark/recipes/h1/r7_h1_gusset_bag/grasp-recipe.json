@@ -1,0 +1,120 @@
+[
+  {
+    "side": "left",
+    "rotation_xyzw": [
+      0.7147031426429749,
+      -0.10765480995178223,
+      -0.6896461844444275,
+      -0.04469868913292885
+    ],
+    "contact_point_local_m": [
+      0.13635849635282835,
+      -0.0729409497713223,
+      0.02874133930869728
+    ],
+    "open_contact_point_local_m": [
+      0.13635849635282835,
+      -0.0729409497713223,
+      0.02874133930869728
+    ],
+    "contact_normal_local": [
+      0.09222990037490554,
+      0.9728249394691422,
+      -0.21238004290350523
+    ],
+    "reference_normal_world": [
+      0,
+      -1,
+      0
+    ],
+    "open_controls": [
+      1.25,
+      0.008686668469377504,
+      1.0,
+      0,
+      0,
+      0
+    ],
+    "closed_controls": [
+      1.25,
+      0.1583178316635836,
+      1.0,
+      0,
+      0,
+      0
+    ],
+    "release_controls": [
+      1.25,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "physical_closed_mesh_gap_m": 0.007799990344614003,
+    "physical_open_mesh_gap_m": 0.030000014855481916,
+    "nominal_total_shell_margin_preload_m": 0.0002,
+    "contact_pair": "original thumb distal and index intermediate collision meshes",
+    "unused_finger_pose": "Original middle, ring and pinky joints straight, with source coupling.",
+    "geometry_correction": "Reduce original index curl from1.42rad to1.0rad. Refit thumb opening and contact frame from original meshes. This removes nonadjacent thumb/index solid intersection."
+  },
+  {
+    "side": "right",
+    "rotation_xyzw": [
+      -0.019256312400102615,
+      0.7002716660499573,
+      -0.05622326210141182,
+      0.7113984227180481
+    ],
+    "contact_point_local_m": [
+      0.13572977662384475,
+      0.07306576437312409,
+      0.025749312953539914
+    ],
+    "open_contact_point_local_m": [
+      0.13572977662384475,
+      0.07306576437312409,
+      0.025749312953539914
+    ],
+    "contact_normal_local": [
+      0.10696359437722766,
+      -0.992936277008495,
+      0.05134529460830227
+    ],
+    "reference_normal_world": [
+      0,
+      -1,
+      0
+    ],
+    "open_controls": [
+      1.25,
+      0.009059418357859632,
+      1.0,
+      0,
+      0,
+      0
+    ],
+    "closed_controls": [
+      1.25,
+      0.1607516612533908,
+      1.0,
+      0,
+      0,
+      0
+    ],
+    "release_controls": [
+      1.25,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "physical_closed_mesh_gap_m": 0.007799976276789991,
+    "physical_open_mesh_gap_m": 0.02999997695551713,
+    "nominal_total_shell_margin_preload_m": 0.0002,
+    "contact_pair": "original thumb distal and index intermediate collision meshes",
+    "unused_finger_pose": "Original middle, ring and pinky joints straight, with source coupling.",
+    "geometry_correction": "Reduce original index curl from1.42rad to1.0rad. Refit thumb opening and contact frame from original meshes. This removes nonadjacent thumb/index solid intersection."
+  }
+]

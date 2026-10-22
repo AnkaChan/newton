@@ -1,0 +1,30 @@
+{
+  "asset_name": "gusset_bag",
+  "rest_grip_positions": [
+    [
+      -0.14,
+      0.395,
+      0.417851984500885
+    ],
+    [
+      0.14,
+      0.395,
+      0.417851984500885
+    ]
+  ],
+  "initial_rotation": [
+    0.7071067811865476,
+    0,
+    0,
+    0.7071067811865476
+  ],
+  "initial_translation": [
+    0,
+    0.6379259705543519,
+    0.255
+  ],
+  "grip_radius": 0.02,
+  "settling_time": 0.0,
+  "lift_height": 0.35,
+  "placement_height_offset": 0.0
+}

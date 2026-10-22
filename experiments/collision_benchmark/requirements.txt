@@ -1,0 +1,5 @@
+# Install after `uv sync --extra examples`; use `uv run --no-sync` afterward.
+# Newton's checked-in uv.lock pins Warp 1.17.0 for the measured solver revision.
+imageio>=2.37
+imageio-ffmpeg>=0.6
+matplotlib>=3.10

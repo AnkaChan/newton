@@ -1,0 +1,88 @@
+{
+  "name": "Women_Sweatshirt",
+  "status": "cached source; Style3D seam/material mapping not transferred",
+  "source": "https://github.com/newton-physics/newton-assets",
+  "cache_revision_suffix": "26c7f5cc",
+  "entrypoint": {
+    "path": "/home/horde/.cache/newton/newton-assets_style3d_82127ee9_26c7f5cc/style3d/garments/Women_Sweatshirt.usd",
+    "sha256": "c0fbcbf8f5db0b58ce50830a41d76df9f04796c4edb545e18174f40b2ad32174",
+    "bytes": 1301010
+  },
+  "license": "BSD-3-Clause",
+  "license_file": {
+    "path": "/home/horde/.cache/newton/newton-assets_style3d_82127ee9_26c7f5cc/style3d/LICENSE",
+    "sha256": "242b355d8ef9113595354d39f6ca9348f1a6d912874a0460c1387eba16b65225",
+    "bytes": 1602
+  },
+  "license_notice": "This product bundles the Style3D Description, which is available under\na BSD 3-Clause license with the following terms:\n\nCopyright (c) 2025 Style3D. All rights reserved.\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\n3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \u201cAS IS\u201d AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+  "units": "USD stage metresPerUnit=1, Y up; pattern UV coordinates are mm per source README",
+  "source_revision": "26c7f5ccaadd9a163f4d6c8f867c789b3ac57d83",
+  "source_tree_sha256": "c8b51388a8d8f5629450f7e1e7f3b5d4f91baf693c457e22dd1cfb17e9178dfc",
+  "source_files": [
+    {
+      "path": "LICENSE",
+      "sha256": "242b355d8ef9113595354d39f6ca9348f1a6d912874a0460c1387eba16b65225"
+    },
+    {
+      "path": "README.md",
+      "sha256": "9fa21ddb6111c1a819b81e4c9104ca053cef064c10a33a536b57a2a1f79aaf93"
+    },
+    {
+      "path": "avatars/Female.usd",
+      "sha256": "7b1298809abc33bc333ddf46c1a6dac9d43c352e2a64faa0f4e9b138f15ec50c"
+    },
+    {
+      "path": "doc/export_usd.jpg",
+      "sha256": "4aa324f55ae329b3ae7ec3ec3444b9742cc28f0ed03a72eb6cff07feed93cf9f"
+    },
+    {
+      "path": "doc/style3d-newton.jpg",
+      "sha256": "f995cfaeb8566da1456fe1ea1923738ee6577e6fb93d9cf5dd3cb7613c7011ff"
+    },
+    {
+      "path": "garments/Female_T_Shirt.usd",
+      "sha256": "301d2e85049be96b2e84a55a094a6da9d4a7c2ef31ad6fc0372bbf9d0673b82e"
+    },
+    {
+      "path": "garments/Women_Skirt.usd",
+      "sha256": "c3ba8dcf96e3f75f7d8f89a2227ce0a267f30f33e096749e078a1e5f371adeec"
+    },
+    {
+      "path": "garments/Women_Sweatshirt.usd",
+      "sha256": "c0fbcbf8f5db0b58ce50830a41d76df9f04796c4edb545e18174f40b2ad32174"
+    },
+    {
+      "path": "garments/h1_cake_skirt.usd",
+      "sha256": "0ca1f3e0274b0eca553d6b697b7fe56dcd2ae2dbb7cb0c1de5f370a7ecef2f10"
+    },
+    {
+      "path": "garments/h1_jacket.usd",
+      "sha256": "9ac8e3ed749aef81b580d7c17056dbfd80c5ab54aeba0becbf8403ee05e8bc27"
+    }
+  ],
+  "preview": "cached_Women_Sweatshirt.png",
+  "dimensions_m": [
+    0.8813866376876831,
+    0.287935733795166,
+    0.5800164937973022
+  ],
+  "bounds_m": [
+    [
+      -0.44074344635009766,
+      -0.15621115267276764,
+      0.0
+    ],
+    [
+      0.44064319133758545,
+      0.13172458112239838,
+      0.5800164937973022
+    ]
+  ],
+  "vertex_count": 24510,
+  "triangle_count": 48824,
+  "preview_geometry_sha256": "5a3fec4a5db00d311798f67822537fcb95bbe842e75b9684077ab5a1a2736a53",
+  "preview_pose": "authored static geometry",
+  "preview_disclosure": "static imported geometry; no simulation or material qualification",
+  "usd_stage_meters_per_unit": 1.0,
+  "usd_authored_up_axis": "Y"
+}

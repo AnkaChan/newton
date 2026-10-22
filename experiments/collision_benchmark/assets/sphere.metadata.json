@@ -1,0 +1,93 @@
+{
+  "name": "sphere",
+  "family": "solid",
+  "units": "m",
+  "up_axis": "Z",
+  "source": "original procedural benchmark geometry",
+  "license": "Apache-2.0",
+  "generator_revision": 2,
+  "resolution": "medium",
+  "dimensions_m": [
+    0.05000000074505806,
+    0.05000000074505806,
+    0.05000000074505806
+  ],
+  "bounds_m": [
+    [
+      -0.02500000037252903,
+      -0.02500000037252903,
+      0.0
+    ],
+    [
+      0.02500000037252903,
+      0.02500000037252903,
+      0.05000000074505806
+    ]
+  ],
+  "vertex_count": 729,
+  "triangle_count": 768,
+  "tet_count": 3072,
+  "geometry_sha256": "bf080c087d44e964bd2111f65cf82f822c3ae9c61218ef6119de163a841d9e1a",
+  "color_rgb": [
+    0.43,
+    0.65,
+    0.78
+  ],
+  "rest_shape": "generated geometry, no settling or simulated draping",
+  "landmarks": {
+    "top": [
+      278,
+      287,
+      296,
+      359,
+      368,
+      377,
+      440,
+      449,
+      458
+    ],
+    "bottom": [
+      270,
+      279,
+      288,
+      351,
+      360,
+      369,
+      432,
+      441,
+      450
+    ],
+    "left": [
+      40
+    ],
+    "right": [
+      688
+    ]
+  },
+  "synthetic_material": {
+    "density_kg_m3": 100.0,
+    "particle_radius_m": 0.001,
+    "k_mu_pa": 20000.0,
+    "k_lambda_pa": 20000.0,
+    "k_damp_pa_s": 0.01
+  },
+  "construction": "cube grid radially mapped to sphere",
+  "validation": {
+    "finite": true,
+    "min_triangle_area_m2": 4.436455764149358e-06,
+    "surface_area_m2": 0.007781817684130983,
+    "min_triangle_angle_degrees": 30.202087028459502,
+    "triangles_with_angle_below_10_degrees": 0,
+    "nonmanifold_edges": 0,
+    "boundary_edges": 0,
+    "inconsistent_winding_edges": 0,
+    "connected_components": 1,
+    "min_tet_volume_m3": 2.0405097828202004e-10,
+    "volume_m3": 6.422460430919612e-05,
+    "nonpositive_tets": 0,
+    "valid": true
+  },
+  "npz": "sphere.npz",
+  "obj": "sphere.obj",
+  "preview": "sphere.png"
+}
