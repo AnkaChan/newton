@@ -11,9 +11,12 @@ import warp as wp
 
 import newton.solvers
 
+from .contact_stiffness import apply_contact_policy
+
 OriginalSolverVBD = newton.solvers.SolverVBD
 MODE = False
 ACTIVE = None
+CONTACT_STIFFNESS_POLICY = None
 
 CONTACT_OPTIONS = {
     "particle_self_contact_method": "penalty_dat",
@@ -33,6 +36,9 @@ def paired_options(mode):
 
 class ObservedSolverVBD(OriginalSolverVBD):
     def __init__(self, model, **kwargs):
+        # Preparation and constructor captures must see the same contact materials.
+        # The policy helper preserves the authored values on solver replacement.
+        self.comparison_contact_policy = apply_contact_policy(model, CONTACT_STIFFNESS_POLICY)
         self.comparison_original_options = dict(kwargs)
         kwargs.update(paired_options(MODE))
         self.comparison_options = dict(kwargs)

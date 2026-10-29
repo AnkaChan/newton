@@ -31,7 +31,9 @@ import warp as wp
 
 import newton.solvers
 
+from . import comparison_runtime as runtime
 from .asset_paths import newton_asset_path
+from .contact_stiffness import apply_contact_policy, describe_policy
 
 __all__ = ["H1_CASE_IDS", "build_h1", "install_h1_solver"]
 
@@ -68,6 +70,9 @@ _PREPARATION_FIELDS = (
     "minimum_pair_x_gap",
     "open_start_evidence",
     "recorded_start_audits",
+    "initial_open_adjustment",
+    "contact_recipe_adjustment",
+    "grasps",
     "near_tip_layer_audits",
 )
 
@@ -240,6 +245,8 @@ def _build_standard(case_id, device, cached, scratch):
     kwargs_record = {}
 
     def standard_solver(model, **kwargs):
+        # Also cover direct build_h1 callers that did not install the observer patch.
+        apply_contact_policy(model, runtime.CONTACT_STIFFNESS_POLICY)
         kwargs.update(_CONTACT_OPTIONS)
         kwargs.update(
             particle_elasticity_alm=False,
@@ -277,7 +284,54 @@ def _build_standard(case_id, device, cached, scratch):
 
             def _configure_grips(self, q):
                 preparation.update(_snapshot(self, drivers=False))
-                super()._configure_grips(q)
+                report = self.model.collision_benchmark_contact_policy
+                policy = report["policy"]
+                # A separate recorded recipe adjustment, not part of the contact law.
+                # The archived authored path and other cap values remain unchanged.
+                adjust = report["changed"] and policy == {
+                    "name": "elasticity-cap",
+                    "version": 1,
+                    "max_ratio": 10.0,
+                    "tet_policy": "numeric",
+                }
+                if not adjust:
+                    super()._configure_grips(q)
+                    return
+                original_driver = module.H1HandDriver
+                delta = np.asarray([0.0009601555626007007, -0.0023266599763613473, -0.002709026582112795])
+
+                class InitialOpenDriver(original_driver):
+                    def __init__(self, model, spec, *, times, positions, rotations, controls):
+                        if spec.side == "right":
+                            expected = [0, 1.5, 2.0, 3.0, 3.5, 6.0, 7.5, 9.5, 12.5, 14.0, 18.5, 20.0, 21.5]
+                            if list(times) != expected or len(positions) != len(expected):
+                                raise ValueError("Jacket initial-open correction requires the recorded trajectory")
+                            positions[0] = np.asarray(positions[0]) + delta
+                        super().__init__(
+                            model, spec, times=times, positions=positions, rotations=rotations, controls=controls
+                        )
+
+                before_q = self.state.particle_q.numpy().copy()
+                before_qd = self.state.particle_qd.numpy().copy()
+                module.H1HandDriver = InitialOpenDriver
+                try:
+                    # Original full-cloth, finite-table, ground and interhand guards.
+                    super()._configure_grips(q)
+                finally:
+                    module.H1HandDriver = original_driver
+                np.testing.assert_array_equal(self.state.particle_q.numpy(), before_q)
+                np.testing.assert_array_equal(self.state.particle_qd.numpy(), before_qd)
+                self.initial_open_adjustment = {
+                    "recipe": "cap10-right-open-translation-v1",
+                    "scope": "Right initial open wrist only; all later poses, rotations, controls and times unchanged",
+                    "right_initial_translation_world_m": delta.tolist(),
+                    "fresh_preparation_supported": True,
+                    "geometry_guards": "Original guards retained; reject any new state that fails",
+                    "retention_guarantee": False,
+                }
+                self.contact_recipe_adjustment = self.initial_open_adjustment
+                self.grasp[1]["initial_open_adjustment"] = self.initial_open_adjustment
+                self.description += " Cap-10 recipe adjustment: only the initial right open wrist is translated; closed and later commands remain unchanged."
 
         scene = CommonJacket(device=device, substeps=10, iterations=100)
         mesh = scene.mesh
@@ -325,6 +379,94 @@ def _build_standard(case_id, device, cached, scratch):
     return scene, preparation
 
 
+def _adjust_towel_pinch(scene):
+    """Retain original paths; change only the measured cap-10 closed thumbs."""
+    report = scene.model.collision_benchmark_contact_policy
+    if not report["changed"] or report["policy"] != {
+        "name": "elasticity-cap",
+        "version": 1,
+        "max_ratio": 10.0,
+        "tet_policy": "numeric",
+    }:
+        return
+    # Original-mesh fits. The nominal preload target is not a force measurement.
+    pitches = (0.16051281243702709, 0.1629728749436688)
+    gaps = (0.007444442715495825, 0.007444439455866814)
+    old_pitches = (0.1583178316635836, 0.1607516612533908)
+    before = _snapshot(scene, drivers=True)
+    corrected, changes = [], []
+    for index, (old, hand, grasp) in enumerate(zip(scene.drivers, scene.specs, scene.grasps, strict=True)):
+        if hand.side != ("left", "right")[index]:
+            raise ValueError("Towel pinch correction requires the recorded hand ordering")
+        times, positions, rotations = old.times.numpy(), old.positions.numpy(), old.rotations.numpy()
+        old_fingers = old.fingers.numpy()
+        controls = old_fingers[:, [0, 1, 4, 6, 8, 10]].astype(float)
+        old_closed = [1.25, old_pitches[index], 1.0, 0.0, 0.0, 0.0]
+        mask = np.all(np.isclose(controls, old_closed, rtol=0, atol=1e-7), axis=1)
+        if np.flatnonzero(mask).tolist() != list(range(1, 8)):
+            raise ValueError("Towel pinch correction requires seven recorded closed keyframes")
+        controls[mask, 1] = pitches[index]
+        driver = type(old)(scene.model, hand, times=times, positions=positions, rotations=rotations, controls=controls)
+        # Avoid a second quaternion normalization and float32 mimic expansion.
+        driver.rotations.assign(rotations)
+        expanded = old_fingers.copy()
+        expanded[np.ix_(mask, [1, 2, 3])] = driver.fingers.numpy()[np.ix_(mask, [1, 2, 3])]
+        if np.any(expanded < hand.lower - 1e-7) or np.any(expanded > hand.upper + 1e-7):
+            raise ValueError("Corrected towel commands exceed original joint limits")
+        if np.any(1.5 * np.abs(np.diff(expanded, axis=0)) / np.diff(times)[:, None] > hand.velocity_limits + 1e-7):
+            raise ValueError("Corrected towel commands exceed original joint speed limits")
+        driver.fingers.assign(expanded)
+        for name, expected in (("times", times), ("positions", positions), ("rotations", rotations)):
+            np.testing.assert_array_equal(getattr(driver, name).numpy(), expected)
+        corrected.append(driver)
+        changes.append(
+            {
+                "side": hand.side,
+                "closed_thumb_pitch_rad": pitches[index],
+                "physical_closed_mesh_gap_m": gaps[index],
+                "changed_keyframes": list(range(1, 8)),
+            }
+        )
+        grasp["closed_controls"] = [1.25, pitches[index], 1.0, 0.0, 0.0, 0.0]
+        grasp["physical_closed_mesh_gap_m"] = gaps[index]
+        grasp["correction_reference_frame"] = "Original index frame and wrist path; only closed thumb pitch changes."
+    scene.drivers = corrected
+    for driver in corrected:
+        driver.update(scene.clock, scene.state0, scene.state1)
+    audits = [
+        driver.geometry_audit(
+            scene.state, points=scene.state.particle_q.numpy(), radii=scene.radius, full_surface_contact=True
+        )
+        for driver in corrected
+    ]
+    if any(a["vertices_inside_robot_solids"] or a["minimum_shell_to_robot_distance_m"] < 0.001 - 1e-6 for a in audits):
+        raise ValueError(f"Original initial hand/cloth guards rejected towel correction: {audits}")
+    path = scene._audit_planned_path()
+    if (
+        min(path["minimum_conservative_table_separation_m"], path["minimum_conservative_interhand_separation_m"])
+        < -1e-5
+    ):
+        raise ValueError(f"Original full-path guards rejected towel correction: {path}")
+    for driver in corrected:
+        driver.update(scene.clock, scene.state0, scene.state1)
+    after = _snapshot(scene, drivers=True)
+    changed = [key for key in before if not np.array_equal(before[key], after[key], equal_nan=True)]
+    if changed != ["driver0.fingers", "driver1.fingers"]:
+        raise ValueError(f"Towel correction changed other initialized arrays: {changed}")
+    scene.planned_path_audit, scene.recorded_start_audits = path, audits
+    scene.contact_recipe_adjustment = {
+        "recipe": "cap10-towel-closed-thumbs-v1",
+        "hands": changes,
+        "scope": "Only closed thumb/mimic commands; original open/release commands, wrist paths and times unchanged",
+        "changed_initialized_arrays": changed,
+        "fresh_preparation_supported": True,
+        "geometry_guards": "Original initial and full-path guards retained; reject any new state that fails",
+        "nominal_total_shell_margin_preload_m": 0.008 - 0.0074444444444444445,
+        "retention_guarantee": False,
+    }
+    scene.description += " Cap-10 recipe adjustment: closed thumbs use a measured 7.4444 mm gap; original wrist paths and open/release commands remain unchanged."
+
+
 def _cache_identity(case_id, scene):
     model_arrays = {}
     for key in (
@@ -339,6 +481,7 @@ def _cache_identity(case_id, scene):
         "body_com",
         "shape_transform",
         "shape_body",
+        "shape_material_ke",
     ):
         array = getattr(scene.model, key, None)
         if isinstance(array, wp.array):
@@ -364,9 +507,25 @@ def _cache_identity(case_id, scene):
         "source_hashes": scene.comparison_source_hashes,
         "newton_source_hashes": core_hashes,
         "solver_kwargs": scene.comparison_solver_kwargs,
+        "contact_stiffness_policy": scene.model.collision_benchmark_contact_policy["policy"],
+        "contact_policy_source_sha256": _sha(Path(__file__).with_name("contact_stiffness.py")),
+        "soft_contact_ke": float(scene.model.soft_contact_ke),
         "model_sha256": _digest_arrays(model_arrays),
         "scope": "Shared standard-elasticity task preparation only; never a scoring reference",
     }
+
+
+def _cache_folder_name(case_id, policy):
+    """Keep preparation caches separate across contact policies and adapters."""
+    encoded = json.dumps(
+        {
+            "policy": describe_policy(policy),
+            "adapter_sha256": _sha(__file__),
+            "contact_policy_source_sha256": _sha(Path(__file__).with_name("contact_stiffness.py")),
+        },
+        sort_keys=True,
+    ).encode()
+    return f"{case_id}--{hashlib.sha256(encoded).hexdigest()[:16]}"
 
 
 def build_h1(case_id, device=None, *, cache_dir=None):
@@ -385,10 +544,11 @@ def build_h1(case_id, device=None, *, cache_dir=None):
     """
     if case_id not in H1_CASE_IDS:
         raise ValueError(f"Unknown accepted H1 case: {case_id}")
+    contact_policy = describe_policy(runtime.CONTACT_STIFFNESS_POLICY)
     user_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     default_cache = user_cache / "newton/collision-benchmark/common-starts"
     root = Path(cache_dir or os.environ.get("NEWTON_COMPARE_H1_CACHE", default_cache))
-    folder = root / case_id
+    folder = root / _cache_folder_name(case_id, runtime.CONTACT_STIFFNESS_POLICY)
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / ".lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -397,6 +557,8 @@ def build_h1(case_id, device=None, *, cache_dir=None):
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text())
             identity = metadata["identity"]
+            if identity.get("contact_stiffness_policy") != contact_policy:
+                raise ValueError("Common H1 cache uses a different contact policy. Use a new cache directory.")
             if identity["adapter_sha256"] != _sha(__file__):
                 raise ValueError("Common H1 cache uses a different adapter. Use a new cache directory.")
             for group in ("source_hashes", "newton_source_hashes"):
@@ -414,6 +576,8 @@ def build_h1(case_id, device=None, *, cache_dir=None):
                 }
         with _clean_preparation_environment(), tempfile.TemporaryDirectory(prefix="prepare-", dir=folder) as tmp:
             scene, preparation = _build_standard(case_id, device, cached, Path(tmp))
+        if case_id == "r7_h1_towel":
+            _adjust_towel_pinch(scene)
         identity = _cache_identity(case_id, scene)
         if metadata is not None:
             if identity != metadata["identity"]:
@@ -456,6 +620,9 @@ def build_h1(case_id, device=None, *, cache_dir=None):
             "preparation_sha256": metadata["preparation_sha256"],
             "npz_sha256": metadata["npz_sha256"],
             "scope": identity["scope"],
+            "recipe_adjustment": getattr(scene, "contact_recipe_adjustment", None),
+            "contact_stiffness_policy": contact_policy,
+            "effective_contact_materials": scene.model.collision_benchmark_contact_policy,
             "preparation_elasticity_alm": False,
             "history_reset_required": True,
         }
