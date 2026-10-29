@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 import subprocess
 import time
@@ -21,6 +22,7 @@ import numpy as np
 import warp as wp
 
 from . import comparison_runtime as runtime
+from .contact_stiffness import describe_policy
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -90,7 +92,8 @@ def frame_measurement(scene):
     return result
 
 
-def main():
+def parse_arguments(argv=None):
+    """Validate run settings before creating outputs or initializing a device."""
     p = argparse.ArgumentParser()
     p.add_argument("case")
     p.add_argument("--mode", choices=["vbd", "alm"], required=True)
@@ -102,13 +105,29 @@ def main():
     p.add_argument("--video-fps", type=float, default=10.0)
     p.add_argument("--width", type=int, default=800)
     p.add_argument("--height", type=int, default=600)
-    args = p.parse_args()
+    p.add_argument("--contact-max-ratio", type=float, help="Opt-in contact stiffness cap; finite and in (0, 10]")
+    p.add_argument("--contact-tet-policy", choices=("numeric", "mesh"), default="numeric")
+    args = p.parse_args(argv)
+    if args.contact_max_ratio is not None and (
+        not math.isfinite(args.contact_max_ratio) or not 0 < args.contact_max_ratio <= 10
+    ):
+        p.error("--contact-max-ratio must be finite and in (0, 10]")
+    return args
+
+
+def main():
+    args = parse_arguments()
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     if (out / "results.json").exists():
         raise FileExistsError(f"Refuse to replace prior run: {out}")
     wp.config.kernel_cache_dir = os.environ.get("WARP_CACHE_PATH", "/tmp/collision-compare-20261019")
     wp.init()
+    runtime.CONTACT_STIFFNESS_POLICY = (
+        {"max_ratio": args.contact_max_ratio, "tet_policy": args.contact_tet_policy}
+        if args.contact_max_ratio is not None
+        else None
+    )
     runtime.install_patch()
     # Preparation always uses standard elasticity. Treatment begins at the shared task start.
     runtime.MODE = False
@@ -126,6 +145,7 @@ def main():
         "warp_version": wp.__version__,
         "device": str(wp.get_device(args.device)),
         "contact_options": runtime.CONTACT_OPTIONS,
+        "contact_stiffness_policy": describe_policy(runtime.CONTACT_STIFFNESS_POLICY),
         "limits": "unset; no overall fidelity pass",
         "source_sha256": {
             f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in Path(__file__).parent.glob("*.py")
@@ -139,6 +159,10 @@ def main():
     pictures = []
     try:
         scene = build_case(args.case, device=args.device, hold_seconds=args.hold_seconds)
+        contact_materials = scene.model.collision_benchmark_contact_policy
+        scene.protocol["contact_stiffness_policy"] = describe_policy(runtime.CONTACT_STIFFNESS_POLICY)
+        scene.protocol["effective_contact_materials"] = contact_materials
+        result["effective_contact_materials"] = contact_materials
         result["input_fingerprint"] = runtime.input_fingerprint(scene)
         result["title"] = scene.title
         result["description"] = scene.description

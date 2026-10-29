@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -219,7 +220,14 @@ def parse_arguments(argv=None):
         "--initial-reference", type=Path, help="Prior results.json whose full initial fingerprint must match"
     )
     parser.add_argument("--without-task-observer", action="store_true")
-    return parser.parse_args(argv)
+    parser.add_argument("--contact-max-ratio", type=float, help="Opt-in contact stiffness cap; finite and in (0, 10]")
+    parser.add_argument("--contact-tet-policy", choices=("numeric", "mesh"), default="numeric")
+    args = parser.parse_args(argv)
+    if args.contact_max_ratio is not None and (
+        not math.isfinite(args.contact_max_ratio) or not 0 < args.contact_max_ratio <= 10
+    ):
+        parser.error("--contact-max-ratio must be finite and in (0, 10]")
+    return args
 
 
 def runner_arguments(args):
@@ -231,6 +239,15 @@ def runner_arguments(args):
         arguments.extend(["--duration", str(args.duration)])
     if args.no_video:
         arguments.append("--no-video")
+    if args.contact_max_ratio is not None:
+        arguments.extend(
+            [
+                "--contact-max-ratio",
+                str(args.contact_max_ratio),
+                "--contact-tet-policy",
+                args.contact_tet_policy,
+            ]
+        )
     return arguments
 
 
@@ -247,6 +264,13 @@ def main(argv=None):
     from experiments.collision_benchmark import comparison_cases
     from experiments.collision_benchmark import comparison_runtime as runtime
     from experiments.collision_benchmark import run_comparison as runner
+    from experiments.collision_benchmark.contact_stiffness import describe_policy
+
+    contact_policy = (
+        {"max_ratio": args.contact_max_ratio, "tet_policy": args.contact_tet_policy}
+        if args.contact_max_ratio is not None
+        else None
+    )
 
     manifest = json.loads((HERE / "physics_manifest.json").read_text())
     physics = verify_physics(runner.ROOT, manifest, warp_version=wp.__version__)
@@ -278,6 +302,7 @@ def main(argv=None):
         "guarded_source_sha256": hashes,
         "initial_reference": str(reference_path) if reference_path else None,
         "initial_reference_sha256": sha256(reference_path) if reference_path else None,
+        "contact_stiffness_policy": describe_policy(contact_policy),
         "preparation": "Math-off, standard elasticity, frozen paired initialization/cache before treatment.",
         "kernel_scope": "particle_vbd module, generated elasticity tile, unique original rigid solve and joint-dual kernels only. Separate particle_alm, coupling and remaining rigid modules unchanged. Inlined ALM functions inside treated modules share their compilation flag.",
         "organization": "Identical native kernel bodies and unique rigid modules for math-off and math-on; no equation backport from the newer PR base.",
@@ -307,6 +332,7 @@ def main(argv=None):
             provenance["duck_runtime_adapter"] = repair_duck(scene, runtime)
         require_fingerprint(runtime.input_fingerprint(scene), initial)
         provenance["initial_fingerprint"] = initial
+        provenance["effective_contact_materials"] = scene.model.collision_benchmark_contact_policy
         provenance["common_start"] = getattr(scene.raw_scene, "comparison_start", None)
         scene.protocol["fast_math_adapter"] = {
             "adapter_sha256": provenance["adapter_sha256"],
