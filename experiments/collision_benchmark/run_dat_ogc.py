@@ -86,7 +86,7 @@ def main(argv=None):
     save_json = runner.save_json
     provenance = {
         "schema_version": 1,
-        "campaign": "main-rigid-soft-dat-ogc-20261102",
+        "campaign": "main-rigid-soft-dat-ogc-sync-20261102",
         "physics_base_revision": physics["base_revision"],
         "newton_revision": physics["revision"],
         "physics_manifest_sha256": sha256(manifest_path),
@@ -99,7 +99,7 @@ def main(argv=None):
         "rigid_soft_enable_dat": True,
         "ogc_scope": "Merged PR4936 full-surface edge-force rule, Eq14; not every part of OGC",
         "kinematic_limit": "Prescribed kinematic hands move outside DAT truncation",
-        "comparison_limit": "Current main and Warp differ from the saved baseline; not an isolated DAT ablation",
+        "comparison_limit": "Compare the recorded physics and Warp pins; this is not an isolated DAT ablation",
         "initial_import": str(args.h1_initial_cache.resolve()) if args.h1_initial_cache else None,
         "command": [sys.executable, "-m", "experiments.collision_benchmark.run_dat_ogc", *(argv or sys.argv[1:])],
     }
