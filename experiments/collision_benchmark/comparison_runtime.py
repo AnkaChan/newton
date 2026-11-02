@@ -17,6 +17,7 @@ OriginalSolverVBD = newton.solvers.SolverVBD
 MODE = False
 ACTIVE = None
 CONTACT_STIFFNESS_POLICY = None
+MAIN_DAT_ENABLED = False
 
 CONTACT_OPTIONS = {
     "particle_self_contact_method": "penalty_dat",
@@ -25,7 +26,38 @@ CONTACT_OPTIONS = {
 }
 
 
+def configure_main_dat(case_id):
+    """Enable the upstream native DAT path before importing scene factories."""
+    global MAIN_DAT_ENABLED  # noqa: PLW0603
+    from . import main_dat_runtime  # noqa: PLC0415 -- keep the historical path independent of native DAT
+
+    main_dat_runtime.configure(case_id)
+    MAIN_DAT_ENABLED = True
+
+
+def disable_main_dat():
+    """Restore the historical path after isolated adapter tests."""
+    global MAIN_DAT_ENABLED  # noqa: PLW0603
+    from . import main_dat_runtime  # noqa: PLC0415 -- keep the historical path independent of native DAT
+
+    main_dat_runtime.disable()
+    MAIN_DAT_ENABLED = False
+
+
+def main_dat_configuration():
+    """Describe the selected native path without importing it when disabled."""
+    if not MAIN_DAT_ENABLED:
+        return None
+    from . import main_dat_runtime  # noqa: PLC0415 -- keep the historical path independent of native DAT
+
+    return main_dat_runtime.configuration()
+
+
 def paired_options(mode):
+    if MAIN_DAT_ENABLED:
+        from . import main_dat_runtime  # noqa: PLC0415 -- keep the historical path independent of native DAT
+
+        return main_dat_runtime.native_options(mode)
     return {
         **CONTACT_OPTIONS,
         "particle_elasticity_alm": bool(mode),
@@ -40,9 +72,22 @@ class ObservedSolverVBD(OriginalSolverVBD):
         # The policy helper preserves the authored values on solver replacement.
         self.comparison_contact_policy = apply_contact_policy(model, CONTACT_STIFFNESS_POLICY)
         self.comparison_original_options = dict(kwargs)
+        if MAIN_DAT_ENABLED:
+            from . import main_dat_runtime  # noqa: PLC0415 -- keep the historical path independent of native DAT
+
+            if kwargs.pop("particle_elasticity_alm", False):
+                raise ValueError("The upstream DAT benchmark requires standard elasticity")
+            kwargs.pop("particle_elasticity_alm_deviatoric", None)
+            kwargs.pop("particle_elasticity_alm_rho_scale", None)
+            method = kwargs.pop("particle_self_contact_method", "penalty_dat")
+            if method != "penalty_dat":
+                raise ValueError(f"Unsupported historical self-contact method: {method}")
+            kwargs["collision_pipeline"] = main_dat_runtime.owned_pipeline(model)
         kwargs.update(paired_options(MODE))
         self.comparison_options = dict(kwargs)
         super().__init__(model, **kwargs)
+        if MAIN_DAT_ENABLED:
+            main_dat_runtime.bind_solver(model, self)
         self.comparison_graphs = {}
         self.comparison_timing_ms = []
         self.comparison_compile_s = 0.0
@@ -53,6 +98,12 @@ class ObservedSolverVBD(OriginalSolverVBD):
             self.comparison_event_end = wp.Event(model.device, enable_timing=True)
 
     def step(self, state_in, state_out, control, contacts, dt):
+        if MAIN_DAT_ENABLED:
+            from . import main_dat_runtime  # noqa: PLC0415 -- keep the historical path independent of native DAT
+
+            # This prescribed-motion copy is outside the solver CUDA timing scope.
+            main_dat_runtime.prepare_kinematic_endpoints(self.model, state_in, state_out)
+            contacts = None
         if ACTIVE is None:
             return super().step(state_in, state_out, control, contacts, dt)
         key = (id(state_in), id(state_out), id(control), id(contacts), float(dt))
@@ -80,7 +131,12 @@ class ObservedSolverVBD(OriginalSolverVBD):
     def timing(self):
         values = np.asarray(self.comparison_timing_ms, dtype=float)
         return {
-            "scope": "VBD solver.step GPU time; excludes external collision detection, drivers, observation and rendering",
+            "scope": (
+                "VBD solver.step GPU time including owned collision detection and capacity latch; "
+                "excludes prescribed endpoint copy, drivers, observation and rendering"
+                if MAIN_DAT_ENABLED
+                else "VBD solver.step GPU time; excludes external collision detection, drivers, observation and rendering"
+            ),
             "method": "CUDA event pair around captured solver.step; synchronized before observation",
             "count": int(values.size),
             "excluded_initial_substeps": min(2, self.comparison_calls),
@@ -111,6 +167,8 @@ def replace_solver(scene, mode):
         raw.example.soft_solver = new
     else:
         raw.solver = new
+    if MAIN_DAT_ENABLED and hasattr(raw, "contacts"):
+        raw.contacts = new.contacts
     if hasattr(raw, "comparison_start"):
         raw.comparison_start["history_reset_required"] = False
         raw.comparison_start["installed_particle_elasticity_alm"] = bool(mode)

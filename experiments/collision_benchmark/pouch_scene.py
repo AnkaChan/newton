@@ -28,6 +28,34 @@ def _tick(clock: wp.array[float], dt: float):
     clock[0] += dt
 
 
+def _initial_self_contact_audit(solver, state, interaction_distance):
+    """Query native owned results or preserve the historical independent audit."""
+    pipeline = getattr(solver, "collision_pipeline", None)
+    if pipeline is not None:
+        pipeline.refit_soft_self_contact_bvh(state.particle_q, rebuild=True)
+        pipeline.collide(state, solver.contacts, soft_self_contact=True)
+        info = solver.contacts.soft_self_contact_data
+        return {
+            "interaction_distance_m": interaction_distance,
+            "detection_only_gap_m": pipeline.soft_self_contact_gap,
+            "query_radius_m": pipeline.soft_self_contact_margin + pipeline.soft_self_contact_gap,
+            "method": "Native owned pipeline query with configured margin plus detection gap; no simulation step",
+            "vertex_triangle_candidates_at_query_radius": int(info.vertex_colliding_triangles_count.numpy().sum()),
+            "edge_edge_candidates_at_query_radius": int(info.edge_colliding_edges_count.numpy().sum()),
+        }
+    detector = solver.trimesh_collision_detector
+    detector.rebuild(state.particle_q)
+    detector.vertex_triangle_collision_detection(interaction_distance)
+    detector.edge_edge_collision_detection(interaction_distance)
+    return {
+        "interaction_distance_m": interaction_distance,
+        "vertex_triangle_pairs_inside_interaction_distance": int(
+            detector.vertex_colliding_triangles_count.numpy().sum()
+        ),
+        "edge_edge_pairs_inside_interaction_distance": int(detector.edge_colliding_edges_count.numpy().sum()),
+    }
+
+
 class _PouchScene:
     def __init__(self, *, device=None, use_cuda_graph=True, substeps=10, iterations=40):
         self.scene_id = "m2_franka_pouch"
@@ -157,17 +185,7 @@ class _PouchScene:
             self.model, soft_contact_gap=0.003, enable_rigid_soft_full_surface_contact=True
         )
         self.contacts = self.pipeline.contacts()
-        detector = self.solver.trimesh_collision_detector
-        detector.rebuild(self.state.particle_q)
-        detector.vertex_triangle_collision_detection(self.self_contact_margin)
-        detector.edge_edge_collision_detection(self.self_contact_margin)
-        self.initial_self_contact = {
-            "interaction_distance_m": self.self_contact_margin,
-            "vertex_triangle_pairs_inside_interaction_distance": int(
-                detector.vertex_colliding_triangles_count.numpy().sum()
-            ),
-            "edge_edge_pairs_inside_interaction_distance": int(detector.edge_colliding_edges_count.numpy().sum()),
-        }
+        self.initial_self_contact = _initial_self_contact_audit(self.solver, self.state, self.self_contact_margin)
         self.triangles = self.model.tri_indices.numpy()
         self.edges = np.unique(
             np.sort(

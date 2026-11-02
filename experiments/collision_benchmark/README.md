@@ -1,8 +1,86 @@
 # Collision-fidelity benchmarks
 
-This experimental suite contains the 44 current collision benchmark scenes.
-It compares standard VBD with ALM **particle elasticity only**. Contact settings
-stay fixed. It also tests the compilation scope of fast-math PR
+This experimental suite contains 44 collision benchmark scenes. This branch
+adds a current-main DAT/OGC run for the nine reduced-stiffness cloth
+manipulation recipes. It pins Newton main `3768a475e6` and Warp `1.19.0`.
+
+## Current-main DAT and OGC campaign
+
+Use `run_dat_ogc` on this branch. The older `fast_math` entry point below
+retains its historical physics guard and belongs to the
+[original benchmark branch](https://github.com/AnkaChan/newton/tree/ankac/collision-benchmark-compare-20261019).
+Current main does not provide that fork's ALM particle-elasticity option.
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv sync --python 3.12 --extra examples --locked
+uv pip install --python .venv-dat-ogc/bin/python \
+  -r experiments/collision_benchmark/requirements.txt
+```
+
+Warp 1.19's default wheel requires a CUDA 13 driver. On a CUDA 12 driver,
+install the official CUDA 12 build of the same release:
+
+```bash
+uv pip install --python .venv-dat-ogc/bin/python \
+  'https://github.com/NVIDIA/warp/releases/download/v1.19.0/warp_lang-1.19.0%2Bcu12-py3-none-manylinux_2_28_x86_64.whl'
+```
+
+Run a full pouch hold and release:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \
+  -m experiments.collision_benchmark.run_dat_ogc m2_franka_pouch \
+  --out outputs/main-dat-ogc/m2_franka_pouch
+```
+
+The entry point fixes standard VBD elasticity, native fast math off, rigid-soft
+DAT on, full-surface contacts, and the 10x contact-coefficient cap. It uses the
+merged OGC edge-force rule from PR 4936. This does not implement every part of
+OGC. It preserves the existing recipe's timestep, iterations, material, and
+hand commands. Each result records the effective settings and exact sources.
+
+Newton owns collision detection in this path. The adapter copies prescribed
+kinematic hand endpoints into the native solver's input. DAT does not truncate
+those hand motions or certify their continuous sweep. The first native step
+initializes rigid pose history at its input endpoint. Solver timing now
+includes owned collision detection; older solver timing excluded the external
+detection pass. Do not compare these timings as equal-cost measurements.
+
+Use `--h1-initial-cache /path/to/common-start-directory` to import a verified
+historical jacket or towel initial condition. The importer checks saved hashes,
+rest geometry, body layout, and robot asset bytes. It keeps original files and
+creates a new cache under the current solver identity. The towel's recorded
+closed-thumb correction applies once. These arrays specify the initial scene;
+they are never scoring references. Without this option, H1 uses a new native
+preparation, which can differ from the saved campaign.
+
+Use a new output directory for each run. `--duration 1 --no-video` is a setup
+check only. Default durations preserve the full 60-second hold. The campaign
+compares current main with saved older results, so other Newton and Warp
+changes are also present. It is not an isolated DAT-on/off experiment.
+
+The runner stops on nonfinite state or detected contact-buffer overflow.
+Sticky counters cover every owned global and soft-self detection pass.
+They do not cover per-body adjacency buffers. These recipes prescribe all
+robot bodies as kinematic; native adjacency excludes those bodies.
+
+Check the current adapter on CPU:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python -m unittest \
+  experiments.collision_benchmark.test_main_dat_runtime \
+  experiments.collision_benchmark.test_comparison_h1_import \
+  experiments.collision_benchmark.test_comparison_h1_adjustments \
+  experiments.collision_benchmark.test_contact_stiffness
+```
+
+The historical compiler-scope tests below require the original fork's ALM
+module. They do not apply to this current-main entry point.
+
+## Historical benchmark configuration
+
+The original branch compares standard VBD with ALM **particle elasticity only**.
+Contact settings stay fixed. It also tests the compilation scope of fast-math PR
 [#4830](https://github.com/newton-physics/newton/pull/4830) on this same solver
 version. The solver base is Newton `11702e64`; Warp is `1.17.0`.
 

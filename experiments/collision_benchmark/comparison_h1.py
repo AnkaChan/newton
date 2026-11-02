@@ -40,11 +40,6 @@ __all__ = ["H1_CASE_IDS", "build_h1", "install_h1_solver"]
 H1_CASE_IDS = ("j3_h1_jacket", "r7_h1_sheet", "r7_h1_towel", "r7_h1_gusset_bag")
 _RECORDED = Path(__file__).with_name("recipes") / "h1"
 _PACKAGE = "experiments.collision_benchmark"
-_CONTACT_OPTIONS = {
-    "particle_self_contact_method": "penalty_dat",
-    "rigid_compliant_alm": False,
-    "rigid_contact_hard": False,
-}
 _PREPARATION_FIELDS = (
     "times",
     "hold_window",
@@ -74,6 +69,7 @@ _PREPARATION_FIELDS = (
     "contact_recipe_adjustment",
     "grasps",
     "near_tip_layer_audits",
+    "historical_initial_import",
 )
 
 
@@ -240,22 +236,19 @@ def _clean_preparation_environment():
         os.environ.update(saved)
 
 
-def _build_standard(case_id, device, cached, scratch):
+def _build_standard(case_id, device, cached, scratch, initial_import=None):
     module, dependencies, source_hashes = _recorded_modules(case_id)
     kwargs_record = {}
 
     def standard_solver(model, **kwargs):
         # Also cover direct build_h1 callers that did not install the observer patch.
         apply_contact_policy(model, runtime.CONTACT_STIFFNESS_POLICY)
-        kwargs.update(_CONTACT_OPTIONS)
-        kwargs.update(
-            particle_elasticity_alm=False,
-            particle_elasticity_alm_deviatoric=True,
-            particle_elasticity_alm_rho_scale=1.0,
-        )
+        if initial_import is not None:
+            _validate_import_model(model, initial_import)
+        kwargs.update(runtime.paired_options(False))
         kwargs_record.update(kwargs)
         result = newton.solvers.SolverVBD(model, **kwargs)
-        if result.particle_elasticity_alm:
+        if getattr(result, "particle_elasticity_alm", False):
             raise ValueError("H1 preparation requires the global comparison solver mode to be standard elasticity")
         return result
 
@@ -467,7 +460,8 @@ def _adjust_towel_pinch(scene):
     scene.description += " Cap-10 recipe adjustment: closed thumbs use a measured 7.4444 mm gap; original wrist paths and open/release commands remain unchanged."
 
 
-def _cache_identity(case_id, scene):
+def _model_arrays(model):
+    """Retain the historical rest-geometry/body-layout fingerprint schema."""
     model_arrays = {}
     for key in (
         "particle_q",
@@ -483,9 +477,14 @@ def _cache_identity(case_id, scene):
         "shape_body",
         "shape_material_ke",
     ):
-        array = getattr(scene.model, key, None)
+        array = getattr(model, key, None)
         if isinstance(array, wp.array):
             model_arrays[key] = array.numpy()
+    return model_arrays
+
+
+def _cache_identity(case_id, scene):
+    model_arrays = _model_arrays(scene.model)
     core = Path(newton.__file__).parent
     core_hashes = {
         str(path): _sha(path)
@@ -495,18 +494,23 @@ def _cache_identity(case_id, scene):
             "_src/solvers/vbd/particle_vbd_kernels.py",
             "_src/solvers/vbd/rigid_vbd_kernels.py",
             "_src/solvers/vbd/vbd_coupling_kernels.py",
+            "_src/solvers/vbd/interval_arithmetic.py",
+            "_src/geometry/soft_contacts_mesh.py",
             "_src/geometry/tri_mesh_collision.py",
             "_src/sim/collide.py",
         )
         for path in (core / relative,)
+        if path.exists()
     }
     return {
         "schema": 1,
         "case_id": case_id,
         "adapter_sha256": _sha(__file__),
+        "runtime_sha256": _sha(runtime.__file__),
+        "runtime_configuration": runtime.main_dat_configuration(),
         "source_hashes": scene.comparison_source_hashes,
         "newton_source_hashes": core_hashes,
-        "solver_kwargs": scene.comparison_solver_kwargs,
+        "solver_kwargs": _jsonable(scene.comparison_solver_kwargs),
         "contact_stiffness_policy": scene.model.collision_benchmark_contact_policy["policy"],
         "contact_policy_source_sha256": _sha(Path(__file__).with_name("contact_stiffness.py")),
         "soft_contact_ke": float(scene.model.soft_contact_ke),
@@ -515,17 +519,129 @@ def _cache_identity(case_id, scene):
     }
 
 
-def _cache_folder_name(case_id, policy):
+def _cache_folder_name(case_id, policy, initial_import=None):
     """Keep preparation caches separate across contact policies and adapters."""
     encoded = json.dumps(
         {
             "policy": describe_policy(policy),
             "adapter_sha256": _sha(__file__),
             "contact_policy_source_sha256": _sha(Path(__file__).with_name("contact_stiffness.py")),
+            "runtime_sha256": _sha(runtime.__file__),
+            "runtime_configuration": runtime.main_dat_configuration(),
+            "initial_import": initial_import,
         },
         sort_keys=True,
     ).encode()
     return f"{case_id}--{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+def _load_initial_import(folder, case_id):
+    """Read a hash-checked historical initialization without changing its files."""
+    if case_id not in ("j3_h1_jacket", "r7_h1_towel"):
+        raise ValueError("Historical initialization is supported only for the approved jacket/towel cases")
+    folder = Path(folder).resolve()
+    metadata_path, arrays_path = folder / "common-start.json", folder / "common-start.npz"
+    metadata = json.loads(metadata_path.read_text())
+    if metadata["identity"]["case_id"] != case_id:
+        raise ValueError("Historical initialization belongs to a different case")
+    _verify(arrays_path, metadata["npz_sha256"])
+    with np.load(arrays_path, allow_pickle=False) as data:
+        arrays = {
+            stage: {k.removeprefix(stage + "/"): data[k].copy() for k in data.files if k.startswith(stage + "/")}
+            for stage in ("prepare", "start")
+        }
+    for stage, key in (("prepare", "preparation_sha256"), ("start", "state_sha256")):
+        if not arrays[stage] or _digest_arrays(arrays[stage]) != metadata[key]:
+            raise ValueError(f"Historical {stage} state fingerprint does not match")
+    commands = {k: v for k, v in arrays["start"].items() if k.startswith("driver")}
+    if _digest_arrays(commands) != metadata["command_sha256"]:
+        raise ValueError("Historical command fingerprint does not match")
+    return {
+        "metadata": metadata,
+        "arrays": arrays,
+        "provenance": {
+            "directory": str(folder),
+            "metadata_sha256": _sha(metadata_path),
+            "npz_sha256": metadata["npz_sha256"],
+            "state_sha256": metadata["state_sha256"],
+            "command_sha256": metadata["command_sha256"],
+            "preparation_sha256": metadata["preparation_sha256"],
+            "scope": "Explicit historical initial condition and commands; not a scoring reference or DAT preparation",
+        },
+    }
+
+
+def _validate_import_model(model, initial_import):
+    """Reject changed rest topology, mass, body/shape correspondence or assets."""
+    identity = initial_import["metadata"]["identity"]
+    if _digest_arrays(_model_arrays(model)) != identity["model_sha256"]:
+        raise ValueError("Historical H1 model geometry/body-layout fingerprint differs; import is unsafe")
+    if identity["contact_stiffness_policy"] != describe_policy(runtime.CONTACT_STIFFNESS_POLICY):
+        raise ValueError("Historical H1 initialization uses a different contact cap")
+    if float(model.soft_contact_ke) != identity["soft_contact_ke"]:
+        raise ValueError("Historical H1 initialization uses a different soft contact coefficient")
+    expected = json.loads((_RECORDED / "manifest.json").read_text())["robot_asset_files"]
+    historical = {
+        name.rsplit("/unitree_h1/", 1)[1]: digest
+        for name, digest in identity["source_hashes"].items()
+        if "/unitree_h1/" in name
+    }
+    if historical != expected:
+        raise ValueError("Historical H1 robot asset bytes do not match the pinned current hand assets")
+
+
+def _audit_imported_start(scene, case_id):
+    """Recheck restored original hand geometry without stepping the material."""
+    before = _snapshot(scene, drivers=True)
+    q = scene.state.particle_q.numpy()
+    audits = [
+        d.geometry_audit(scene.state, points=q, radii=scene.radius, full_surface_contact=True) for d in scene.drivers
+    ]
+    if any(a["vertices_inside_robot_solids"] or a["minimum_shell_to_robot_distance_m"] < 0.001 - 1e-6 for a in audits):
+        raise ValueError(f"Historical start fails original hand/cloth guards: {audits}")
+    if case_id == "j3_h1_jacket":
+        path, gaps = [], []
+        for time_s in np.linspace(0, scene.duration, 216):
+            scene.clock.assign([time_s])
+            clouds = []
+            for driver in scene.drivers:
+                driver.update(scene.clock, scene.state0, scene.state1)
+                audit = driver.geometry_audit(
+                    scene.state,
+                    points=np.empty((0, 3)),
+                    ground_z=0,
+                    box_center=scene.table_center,
+                    box_half=scene.table_half,
+                )
+                if (
+                    min(
+                        audit["minimum_conservative_box_separation_m"],
+                        audit["hand_ground_clearance_including_margin_m"],
+                    )
+                    < 0.002
+                ):
+                    raise ValueError("Historical jacket path fails original table/ground guards")
+                path.append({"time_s": float(time_s), "side": driver.spec.side, **audit})
+                clouds.append(np.concatenate([v for v, _ in driver.world_collision_meshes(scene.state).values()]))
+            gaps.append(float(clouds[1][:, 0].min() - clouds[0][:, 0].max() - 0.002))
+        if min(gaps) < 0:
+            raise ValueError("Historical jacket path fails original interhand separation guard")
+        scene.path_audits, scene.minimum_pair_x_gap = path, min(gaps)
+        path_summary = {"samples": len(path), "minimum_pair_x_gap_m": min(gaps)}
+    else:
+        path_summary = scene._audit_planned_path()
+        if (
+            min(
+                path_summary["minimum_conservative_table_separation_m"],
+                path_summary["minimum_conservative_interhand_separation_m"],
+            )
+            < -1e-5
+        ):
+            raise ValueError("Historical towel path fails original table/interhand guards")
+        scene.planned_path_audit, scene.recorded_start_audits = path_summary, audits
+    # Audits change only robot scratch/state arrays; restore the exact imported start.
+    _restore(scene, before, drivers=True)
+    return {"initial_hand_audits": audits, "path": path_summary}
 
 
 def build_h1(case_id, device=None, *, cache_dir=None):
@@ -544,11 +660,16 @@ def build_h1(case_id, device=None, *, cache_dir=None):
     """
     if case_id not in H1_CASE_IDS:
         raise ValueError(f"Unknown accepted H1 case: {case_id}")
+    import_folder = os.environ.get("NEWTON_COMPARE_H1_INITIAL_IMPORT")
+    initial_import = _load_initial_import(import_folder, case_id) if import_folder else None
+    if initial_import is not None and runtime.main_dat_configuration() is None:
+        raise ValueError("Historical initialization import requires the explicit upstream DAT runtime")
+    import_provenance = initial_import["provenance"] if initial_import is not None else None
     contact_policy = describe_policy(runtime.CONTACT_STIFFNESS_POLICY)
     user_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     default_cache = user_cache / "newton/collision-benchmark/common-starts"
     root = Path(cache_dir or os.environ.get("NEWTON_COMPARE_H1_CACHE", default_cache))
-    folder = root / _cache_folder_name(case_id, runtime.CONTACT_STIFFNESS_POLICY)
+    folder = root / _cache_folder_name(case_id, runtime.CONTACT_STIFFNESS_POLICY, import_provenance)
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / ".lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -575,10 +696,26 @@ def build_h1(case_id, device=None, *, cache_dir=None):
                     for stage in ("prepare", "start")
                 }
         with _clean_preparation_environment(), tempfile.TemporaryDirectory(prefix="prepare-", dir=folder) as tmp:
-            scene, preparation = _build_standard(case_id, device, cached, Path(tmp))
+            preparation_cache = cached if cached is not None else initial_import["arrays"] if initial_import else None
+            scene, preparation = _build_standard(case_id, device, preparation_cache, Path(tmp), initial_import)
+        if initial_import is not None and metadata is None:
+            for name, value in initial_import["metadata"]["python_fields"].items():
+                if name not in _PREPARATION_FIELDS:
+                    raise ValueError(f"Unsupported historical Python state field: {name}")
+                setattr(scene, name, _restore_python(value, getattr(scene, name, None)))
+            _restore(scene, initial_import["arrays"]["start"], drivers=True)
         if case_id == "r7_h1_towel":
             _adjust_towel_pinch(scene)
+        if initial_import is not None and metadata is None:
+            scene.historical_initial_import = {
+                **import_provenance,
+                "model_correspondence_verified": True,
+                "robot_asset_bytes_verified": True,
+                "geometry_audits": _audit_imported_start(scene, case_id),
+                "post_correction_state_sha256": _digest_arrays(_snapshot(scene, drivers=True)),
+            }
         identity = _cache_identity(case_id, scene)
+        identity["historical_initial_import"] = import_provenance
         if metadata is not None:
             if identity != metadata["identity"]:
                 raise ValueError(
@@ -621,9 +758,11 @@ def build_h1(case_id, device=None, *, cache_dir=None):
             "npz_sha256": metadata["npz_sha256"],
             "scope": identity["scope"],
             "recipe_adjustment": getattr(scene, "contact_recipe_adjustment", None),
+            "historical_initial_import": getattr(scene, "historical_initial_import", None),
             "contact_stiffness_policy": contact_policy,
             "effective_contact_materials": scene.model.collision_benchmark_contact_policy,
             "preparation_elasticity_alm": False,
+            "preparation_runtime": "historical initialization import" if initial_import else "current standard solver",
             "history_reset_required": True,
         }
         return scene
@@ -636,12 +775,11 @@ def install_h1_solver(scene, *, particle_elasticity_alm):
     observed substeps or capture a new graph after installing the solver.
     """
     kwargs = copy.deepcopy(scene.comparison_solver_kwargs)
-    kwargs.update(_CONTACT_OPTIONS)
-    kwargs["particle_elasticity_alm"] = bool(particle_elasticity_alm)
-    kwargs["particle_elasticity_alm_deviatoric"] = True
-    kwargs["particle_elasticity_alm_rho_scale"] = 1.0
+    kwargs.update(runtime.paired_options(particle_elasticity_alm))
     scene.solver = newton.solvers.SolverVBD(scene.model, **kwargs)
-    if scene.solver.particle_elasticity_alm != bool(particle_elasticity_alm):
+    if runtime.main_dat_configuration() is not None:
+        scene.contacts = scene.solver.contacts
+    if getattr(scene.solver, "particle_elasticity_alm", False) != bool(particle_elasticity_alm):
         raise ValueError("Global comparison solver mode disagrees with requested H1 treatment")
     scene.solver.reset(scene.state, flags=0)
     scene.graph = None
