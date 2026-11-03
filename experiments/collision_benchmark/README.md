@@ -1,10 +1,14 @@
 # Collision-fidelity benchmarks
 
-This experimental suite contains 44 collision benchmark scenes. This branch
-adds a current-main DAT/OGC run for the nine reduced-stiffness cloth
-manipulation recipes. It pins Newton main `3768a475e6` and Warp `1.19.0`.
+This suite preserves the historical 44-scene benchmark and adds a synced-main
+DAT/OGC campaign for nine reduced-stiffness cloth manipulation recipes.
+The recorded benchmark commit is `9470121d2eeb995aa9488e4978d1b4abf92b0e1c`,
+based on upstream main `351b9d9f521fbb9f8f729445a4bff929e8521197`.
+It uses Warp `1.19.0+cu12`; Warp's Python version reports `1.19.0`.
+Use the [synced reproduction guide](https://kanna.ankachen.com/artifacts/newton-dat-ogc-synced-main/evidence/reproduce.md)
+for the exact source pin, verified downloads and selected nine-case commands.
 
-## Current-main DAT and OGC campaign
+## Synced-main DAT and OGC campaign
 
 Use `run_dat_ogc` on this branch. The older `fast_math` entry point below
 retains its historical physics guard and belongs to the
@@ -25,13 +29,18 @@ uv pip install --python .venv-dat-ogc/bin/python \
   'https://github.com/NVIDIA/warp/releases/download/v1.19.0/warp_lang-1.19.0%2Bcu12-py3-none-manylinux_2_28_x86_64.whl'
 ```
 
-Run a full pouch hold and release:
+Run a full native pouch attempt with its original 128-row self-contact storage:
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \
   -m experiments.collision_benchmark.run_dat_ogc m2_franka_pouch \
   --out outputs/main-dat-ogc/m2_franka_pouch
 ```
+
+The selected synced cohort uses the archived 512-row wrapper for pouch, patch,
+dress and H1 towel. The direct command above does not select that override.
+The reproduction guide also supplies the exact two H1 initial states.
+A complete timeline does not establish successful retention or release.
 
 The entry point fixes standard VBD elasticity, native fast math off, rigid-soft
 DAT on, full-surface contacts, and the 10x contact-coefficient cap. It uses the
@@ -42,9 +51,11 @@ hand commands. Each result records the effective settings and exact sources.
 Newton owns collision detection in this path. The adapter copies prescribed
 kinematic hand endpoints into the native solver's input. DAT does not truncate
 those hand motions or certify their continuous sweep. The first native step
-initializes rigid pose history at its input endpoint. Solver timing now
-includes owned collision detection; older solver timing excluded the external
-detection pass. Do not compare these timings as equal-cost measurements.
+initializes rigid pose history at its input endpoint. Native-main solver timing
+includes owned collision detection and capacity latches. The previous
+`3768a475` native-main campaign uses the same timing boundary. The historical
+`11702e64` benchmark excluded external collision detection; its solver timings
+do not have the same scope.
 
 Use `--h1-initial-cache /path/to/common-start-directory` to import a verified
 historical jacket or towel initial condition. The importer checks saved hashes,
@@ -55,9 +66,12 @@ they are never scoring references. Without this option, H1 uses a new native
 preparation, which can differ from the saved campaign.
 
 Use a new output directory for each run. `--duration 1 --no-video` is a setup
-check only. Default durations preserve the full 60-second hold. The campaign
-compares current main with saved older results, so other Newton and Warp
-changes are also present. It is not an isolated DAT-on/off experiment.
+check only. Default durations preserve the full 60-second hold. The synced
+campaign compares upstream `351b9d9f` with the selected `3768a475` attempts,
+using the same Warp `1.19.0+cu12` build, capacities and recorded inputs.
+Both already enable DAT and the merged OGC edge rule. This is an upstream
+revision rerun, not an isolated DAT/OGC experiment. Comparisons with the
+historical `11702e64` campaign also change Warp and the timing scope.
 
 The runner stops on nonfinite state or detected contact-buffer overflow.
 Sticky counters cover every owned global and soft-self detection pass.
@@ -79,6 +93,10 @@ module. They do not apply to this current-main entry point.
 
 ## Historical benchmark configuration
 
+The following subsections apply to the original benchmark branch linked above,
+not this nine-case native-main campaign. Keep its ALM/compiler guards and
+historical commands on that original branch.
+
 The original branch compares standard VBD with ALM **particle elasticity only**.
 Contact settings stay fixed. It also tests the compilation scope of fast-math PR
 [#4830](https://github.com/newton-physics/newton/pull/4830) on this same solver
@@ -95,7 +113,7 @@ asset downloads portable. They do not change the measured material, mesh,
 contact, timestep, iteration, or motion settings. Earlier numerical results
 refer to the archived source hashes, not this later packaging commit.
 
-## Install
+### Install
 
 Use Linux, Python 3.12, an NVIDIA CUDA GPU, and a compatible NVIDIA driver.
 The measured runs used L40 GPUs. Run these commands from the repository root:
@@ -114,7 +132,7 @@ Video capture needs OpenGL. On a Linux machine without a display, install
 measurements are needed. First use can download pinned robot asset revisions
 and compile Warp kernels.
 
-## Run one scene
+### Run one scene
 
 Start with two soft pads. This scene runs for seven simulated seconds:
 
@@ -151,7 +169,7 @@ use `--duration 1 --no-video`. Such a short run is not a full benchmark result.
 Keep default durations and hold times for full comparisons. Every scene uses
 at most ten substeps. The saved result states the timestep and iteration count.
 
-## Reduce contact stiffness
+### Reduce contact stiffness
 
 Use this explicit configuration to cap contact stiffness at ten times the
 declared elasticity reference. The default command without these flags keeps
@@ -214,7 +232,7 @@ some cases. No overall fidelity pass or repeatability guarantee is assigned.
 The report preserves the rejected jacket setup and the towel's original hold
 failure beside the successful pose corrections.
 
-## Select a scene
+### Select a scene
 
 Read [cases.json](cases.json) for all 44 IDs, settings, and metric applicability.
 List the IDs without importing a simulation scene:
@@ -243,7 +261,7 @@ for case in $(uv run --no-sync python -c \
 done
 ```
 
-## Compare fast math
+### Compare fast math
 
 Both commands use the same scene and solver source. The adapter changes only
 the selected compiler flags. Preparation uses math off in both runs.
@@ -271,7 +289,7 @@ It does not replay all changes in the newer upstream PR branch. For rod-only
 scenes, the particle elasticity flag has no effect; selected rigid kernels can
 still change with fast math.
 
-## Read the measurements
+### Read the measurements
 
 - `measurements.finite` records nonfinite state and the first failure time.
 - `measurements.stability` records J* and V* over complete fixed 0.5-second
@@ -293,7 +311,7 @@ criteria; missing measurements are not zero. Compare the same complete finite
 cases for each metric mean, and report failed runs separately. Repeated runs
 can differ even with the same compiler flag.
 
-## Source map and checks
+### Source map and checks
 
 - [run_comparison.py](run_comparison.py): baseline and ALM elasticity runner.
 - [comparison_cases.py](comparison_cases.py): scene registry and hold timing.
