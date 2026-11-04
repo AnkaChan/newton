@@ -27,7 +27,7 @@ def _tick(clock: wp.array[float], dt: float):
 
 
 class BagRobotScene:
-    def __init__(self, scene_id, *, device=None, substeps=10, iterations=40, use_cuda_graph=True):
+    def __init__(self, scene_id, *, device=None, substeps=10, iterations=40, use_cuda_graph=True, closed_opening=0.004):
         if scene_id not in SCENE_IDS:
             raise ValueError(scene_id)
         if int(substeps) != substeps or not 2 <= substeps <= 10 or substeps % 2:
@@ -110,7 +110,7 @@ class BagRobotScene:
         grip_z = bottom + height + 0.14 * np.sqrt(1.0 - (self.grip_x / (width / 4.0)) ** 2)
         self.grip_centers = [(-self.grip_x, -depth / 2, grip_z), (self.grip_x, depth / 2, grip_z)]
         rotation = (1.0, 0.0, 0.0, 0.0)
-        self.closed_opening = 0.004
+        self.closed_opening = float(closed_opening)
         self.hands = [
             add_franka_hand(
                 builder, pinch_pos=center, rotation=rotation, opening=self.closed_opening, label=f"bag_franka_{i}"
