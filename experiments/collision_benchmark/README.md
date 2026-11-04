@@ -12,8 +12,8 @@ The current registry also includes a passive 52-card stacking scene with no
 moving ball. It is an added scene, separate from the recorded nine-case
 manipulation comparison.
 
-The current empty-shopping-tote recipe uses a 5 mm closed finger opening
-and centers the pinch patches on handle vertices.
+The current empty-shopping-tote recipe uses a 3 mm closed finger opening
+and the original pinch pose.
 The recorded nine-case campaign used 4 mm. Use its pinned reproduction guide
 to replay that older comparison.
 
@@ -130,19 +130,22 @@ task-success denominator.
 
 ## Shopping bag grip
 
-The empty tote (`m3_franka_tote_empty`) uses a 5 mm nominal closed opening,
-which gives a 4.960 mm physical gap. The finite fingertip faces center on
-original handle vertices 459 and 513. Each wrist moves 14.145 mm outward and
-2.504 mm upward from the archived pose. The TCP centers are approximately
-(−0.054145, −0.05, 0.655931) m and (+0.054145, +0.05, 0.655931) m.
+The empty tote (`m3_franka_tote_empty`) uses a 3 mm nominal closed opening,
+which gives a 2.960 mm physical gap. It uses the original pinch pose:
+`grip_x=0.04` m and `grip_z_offset=0` m. The TCP centers are approximately
+(−0.04, −0.05, 0.653427) m and (+0.04, +0.05, 0.653427) m.
 
 The relative lift/carry/place motion, 80 mm release opening, bag mesh and
 material, friction and solver settings stay fixed. Other bag recipes keep
 their original 4 mm opening and pinch centers.
 
-Closure-only changes and a smaller 5 mm downward pose shift did not retain
-both handles in every full repeat. The report preserves those attempts.
-The centered-pose recipe is tested separately.
+This setting kept the whole bag supported through the 60 s hold, then placed
+and released it, in two of two recordings. It retained both handles in only
+one of two recordings. The repeat
+lost one handle late in the hold. These observations do not establish a
+reliable grip. Downward-offset and vertex-centered pose trials also lost
+grips. The report preserves all attempts, and the optional pose parameters
+remain available to reproduce them.
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \

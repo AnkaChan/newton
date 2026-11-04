@@ -1366,13 +1366,13 @@
       "kwargs": {
         "substeps": 10,
         "iterations": 40,
-        "closed_opening": 0.005,
-        "grip_z_offset": 0.024055231662088783,
-        "grip_x": 0.054144661873579025
+        "closed_opening": 0.003,
+        "grip_z_offset": 0.0,
+        "grip_x": 0.04
       },
       "env": {},
       "replay": {},
-      "recorded_status": "Prepared handle hold; 5 mm opening; pad faces centered on handle vertices",
+      "recorded_status": "Prepared handle hold; original pinch pose; 3 mm opening; both handles retained in 1 of 2 full recordings",
       "frame_dt_s": 0.03333333333333333,
       "substeps": 10,
       "substep_dt_s": 0.003333333333333333,
@@ -1415,7 +1415,8 @@
       "notes": [
         "2026-11-04: reduce nominal finger opening from 4 mm to 3 mm. Keep mesh, material, friction, wrist motion and solver settings fixed. Preserve the earlier 4 mm results as the historical baseline.",
         "2026-11-04: lower both pinch centers by 5 mm to put nearby coarse handle vertices inside the finite fingertip faces. The 3 mm closure-only repeat lost one handle late in the hold. Preserve those trials. Keep material, friction, robot geometry, motion offsets and solver settings fixed.",
-        "2026-11-04: center original finite fingertip faces on symmetric handle vertices 459/513. Use 5 mm nominal opening. Actual TCP centers move 14.144662 mm outward and 2.503933 mm upward from the archived 4 mm baseline. Keep relative motion, material, friction and solver settings fixed. Preserve all prior grip trials. The inward 460/514 candidate failed the initial palm collision audit and was not simulated."
+        "2026-11-04: center original finite fingertip faces on symmetric handle vertices 459/513. Use 5 mm nominal opening. Actual TCP centers move 14.144662 mm outward and 2.503933 mm upward from the archived 4 mm baseline. Keep relative motion, material, friction and solver settings fixed. Preserve all prior grip trials. The inward 460/514 candidate failed the initial palm collision audit and was not simulated.",
+        "2026-11-04: restore the original pinch pose with 3 mm opening after the offset and centered-pose trials failed to retain both handles reliably. This setting retained whole-bag support through the 60 s hold in 2 of 2 recordings, but both handles remained held in only 1 of 2. This is limited observed evidence, not reliable grip qualification. Preserve all trial outputs and optional pose parameters."
       ],
       "transport_windows": [
         [
