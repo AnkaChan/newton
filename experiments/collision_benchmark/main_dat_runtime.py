@@ -41,6 +41,7 @@ _GAPS = {
     "r5_franka_trousers": 0.005,
     "j3_h1_jacket": 0.005,
     "r7_h1_towel": 0.005,
+    "s4_poker_cards_no_ball": 0.005,
 }
 
 

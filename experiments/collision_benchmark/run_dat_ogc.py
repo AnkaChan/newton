@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record the selected cloth recipes with upstream rigid-soft DAT and OGC.
+"""Record cloth manipulation and passive stacking with upstream DAT and OGC.
 
 Use standard particle elasticity and native fast math off. Keep the historical
 compiler experiment separate. All outcomes use the scene's own measurements.
@@ -35,6 +35,7 @@ CASES = (
     "r5_franka_patch_contact_v2",
     "r5_franka_towel_contact_v2",
     "r5_franka_trousers",
+    "s4_poker_cards_no_ball",
 )
 
 

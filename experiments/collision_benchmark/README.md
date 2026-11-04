@@ -8,6 +8,10 @@ It uses Warp `1.19.0+cu12`; Warp's Python version reports `1.19.0`.
 Use the [synced reproduction guide](https://kanna.ankachen.com/artifacts/newton-dat-ogc-synced-main/evidence/reproduce.md)
 for the exact source pin, verified downloads and selected nine-case commands.
 
+The current registry also includes a passive 52-card stacking scene with no
+moving ball. It is an added scene, separate from the recorded nine-case
+manipulation comparison.
+
 ## Synced-main DAT and OGC campaign
 
 Use `run_dat_ogc` on this branch. The older `fast_math` entry point below
@@ -90,6 +94,34 @@ UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python -m unittest \
 
 The historical compiler-scope tests below require the original fork's ALM
 module. They do not apply to this current-main entry point.
+
+## Poker cards without the moving ball
+
+Run the shipped card setup with its sphere body, collider and motion removed:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \
+  -m experiments.collision_benchmark.run_dat_ogc s4_poker_cards_no_ball \
+  --out outputs/main-dat-ogc/s4_poker_cards_no_ball
+```
+
+This scene keeps all 52 cards, seed 42, card mass and material, platform and
+ground. The platform is a world-fixed box. Standard VBD uses fast math off,
+DAT and the merged OGC edge rule. Settings are 60 Hz, ten substeps (dt 1/600 s),
+and ten iterations. The original demo uses twenty substeps. The benchmark
+keeps the ten-substep limit. The existing 10x contact cap lowers the platform
+coefficient from 5,000,000 to 100,000. Soft and ground coefficients remain
+100,000.
+
+The default run lasts 65 s. It allows 0–5 s for initial drop and stacking,
+then measures J* and V* over 120 half-second windows in [5, 65] s. This fixed
+interval does not assert that the cards have settled. `--hold-seconds` does
+not extend this passive scene. Static-support overlap covers the whole run.
+It does not measure card-card penetration. Grasp, retention, transport and
+release criteria do not apply. Do not include this scene in the manipulation
+task-success denominator.
+
+[Card scene video and measurements](https://kanna.ankachen.com/artifacts/newton-poker-cards-no-ball/index.html)
 
 ## Historical benchmark configuration
 

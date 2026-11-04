@@ -291,9 +291,12 @@ def build_case(case_id, device=None, *, hold_seconds=60.0, solver_kwargs=None):
 
             raw = build_h1(case_id, device)
         else:
-            module_name = {"soft": "soft_scenes", "cable": "cable_scenes", "manipulation": "manipulation"}[
-                case["runner"]
-            ]
+            module_name = {
+                "soft": "soft_scenes",
+                "cable": "cable_scenes",
+                "manipulation": "manipulation",
+                "poker": "poker_cards_scene",
+            }[case["runner"]]
             module = importlib.import_module(f"experiments.collision_benchmark.{module_name}")
             raw = module.build_scene(case["scene_id"], device=device, use_cuda_graph=False, **case["kwargs"])
     _disable_graphs(raw)

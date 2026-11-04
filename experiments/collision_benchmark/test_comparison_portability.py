@@ -20,6 +20,7 @@ H1_CASES = {"j3_h1_jacket", "r7_h1_sheet", "r7_h1_towel", "r7_h1_gusset_bag"}
 
 class TestComparisonPortability(unittest.TestCase):
     def test_registry_and_recipe_paths_from_another_directory(self):
+        """Resolve every registered scene and its inputs outside the checkout."""
         registry = PACKAGE / "cases.json"
         self.assertTrue(registry.is_file(), "The default registry must be included in the checkout")
         previous = Path.cwd()
@@ -28,7 +29,7 @@ class TestComparisonPortability(unittest.TestCase):
                 os.environ.pop("NEWTON_COMPARISON_CASES", None)
                 os.chdir(directory)
                 cases = load_cases()
-                self.assertEqual(len(cases), 44)
+                self.assertEqual(len(cases), 45)
                 self.assertEqual({k for k, v in cases.items() if v["runner"] == "h1"}, H1_CASES)
                 for case in cases.values():
                     self.assertLessEqual(case["substeps"], 10)

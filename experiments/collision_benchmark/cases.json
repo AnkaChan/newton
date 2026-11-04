@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "selection": "38 current logical collection cases plus six distinct explicit robot-matrix exemplars. Historical failures and cube-jaw fixtures excluded; current failed recipes retained.",
-  "case_count": 44,
+  "selection": "38 current logical collection cases plus six distinct explicit robot-matrix exemplars. Historical failures and cube-jaw fixtures excluded; current failed recipes retained. Added passive 52-card stack without a moving sphere.",
+  "case_count": 45,
   "criteria_note": "Applicability is declared before trials. Numerical acceptance limits remain governed by the comparison protocol; this registry does not convert smoke outcomes to passes.",
   "hold_extension": "Extend only declared free-grasp stationary holds to60s. Keep frame interval/substeps/material/contact fixed. Analytic load/stack cases retain their declared windows.",
   "baseline_cost": {
     "simulated_seconds": 443.5687365953913,
     "recorded_wall_seconds": 4553.42721991986,
-    "timing_scope": "Includes setup, compilation, audits, capture and encoding; not pure solver time."
+    "timing_scope": "Includes setup, compilation, audits, capture and encoding; not pure solver time. Historical 44-scene total; the added poker-card scene is excluded."
   },
   "cases": [
     {
@@ -3325,6 +3325,79 @@
         "penetration": true,
         "soft_stability": true,
         "friction_separation": true,
+        "dynamic": false
+      }
+    },
+    {
+      "case_id": "s4_poker_cards_no_ball",
+      "scene_id": "s4_poker_cards_no_ball",
+      "family": "Soft contact",
+      "collection_group": "Soft contact",
+      "original_case": "cloth_poker_cards",
+      "runner": "poker",
+      "kwargs": {
+        "substeps": 10,
+        "iterations": 10
+      },
+      "env": {},
+      "replay": {},
+      "recorded_status": "Passive 52-card stack; sphere body, collider and motion removed",
+      "frame_dt_s": 0.016666666666666666,
+      "substeps": 10,
+      "substep_dt_s": 0.0016666666666666668,
+      "iterations": 10,
+      "duration_s": 65.0,
+      "recorded_wall_time_s": null,
+      "material_path": "cloth",
+      "elasticity_treatment_applicable": true,
+      "initial_hold_prepared": false,
+      "hold_start": null,
+      "hold_end": null,
+      "stationary_windows": [
+        [
+          5.0,
+          65.0
+        ]
+      ],
+      "dynamic_window": [
+        0.0,
+        65.0
+      ],
+      "applicability": {
+        "task_completion": false,
+        "grasp_acquisition": false,
+        "grasp_retention": false,
+        "grasp_slip": false,
+        "penetration": true,
+        "stationary_stability": true,
+        "dynamic_response": false,
+        "release": false,
+        "analytic_freefall": false,
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "soft_stability": true,
+        "friction_separation": false,
+        "dynamic": false
+      },
+      "notes": [
+        "Based on the shipped cloth_poker_cards example at upstream main 351b9d9f.",
+        "The authored 20 substeps become 10 to meet the benchmark limit.",
+        "World-fixed platform preserves geometry and enables static-support overlap measurement.",
+        "Five seconds is a fixed settling allowance, not an equilibrium claim.",
+        "Keep this passive scene outside manipulation task-success counts."
+      ],
+      "transport_windows": [],
+      "place_release_windows": [],
+      "category_applicability": {
+        "grasp": false,
+        "hold": false,
+        "transport": false,
+        "place_release": false,
+        "penetration": true,
+        "soft_stability": true,
+        "friction_separation": false,
         "dynamic": false
       }
     }
