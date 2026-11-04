@@ -12,6 +12,10 @@ The current registry also includes a passive 52-card stacking scene with no
 moving ball. It is an added scene, separate from the recorded nine-case
 manipulation comparison.
 
+The current empty-shopping-tote recipe uses a 3 mm closed finger opening.
+The recorded nine-case campaign used 4 mm. Use its pinned reproduction guide
+to replay that older comparison.
+
 ## Synced-main DAT and OGC campaign
 
 Use `run_dat_ogc` on this branch. The older `fast_math` entry point below
@@ -122,6 +126,27 @@ release criteria do not apply. Do not include this scene in the manipulation
 task-success denominator.
 
 [Card scene video and measurements](https://kanna.ankachen.com/artifacts/newton-poker-cards-no-ball/index.html)
+
+## Shopping bag grip
+
+The empty tote (`m3_franka_tote_empty`) uses a 3 mm nominal closed opening,
+reduced from 4 mm. The authored fingertip faces give an actual gap of 2.960 mm.
+Both hands keep the same wrist poses and lift/carry/place motion. The 80 mm
+release opening, bag mesh and material, friction, and solver settings stay
+fixed. Other bag recipes keep their 4 mm opening.
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \
+  -m experiments.collision_benchmark.run_dat_ogc m3_franka_tote_empty \
+  --out outputs/shopping-bag-grip
+```
+
+This runs the full 67.5 s schedule, including a 60 s hold. It uses ten
+substeps at 30 Hz (dt 1/300 s), forty iterations and a 30,000 N/m contact
+coefficient cap. Retention and placed-object release need separate checks;
+final separation alone can also mean that the object fell earlier.
+
+[Shopping bag video and measurements](https://kanna.ankachen.com/artifacts/newton-shopping-bag-grip/index.html)
 
 ## Historical benchmark configuration
 

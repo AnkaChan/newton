@@ -1365,11 +1365,12 @@
       "runner": "manipulation",
       "kwargs": {
         "substeps": 10,
-        "iterations": 40
+        "iterations": 40,
+        "closed_opening": 0.003
       },
       "env": {},
       "replay": {},
-      "recorded_status": "Prepared hold and release observed; deformation measured",
+      "recorded_status": "Prepared handle hold; 3 mm nominal finger opening",
       "frame_dt_s": 0.03333333333333333,
       "substeps": 10,
       "substep_dt_s": 0.003333333333333333,
@@ -1409,7 +1410,9 @@
         "friction_separation": true,
         "dynamic": false
       },
-      "notes": [],
+      "notes": [
+        "2026-11-04: reduce nominal finger opening from 4 mm to 3 mm. Keep mesh, material, friction, wrist motion and solver settings fixed. Preserve the earlier 4 mm results as the historical baseline."
+      ],
       "transport_windows": [
         [
           0.5,
