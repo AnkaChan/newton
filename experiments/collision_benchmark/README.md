@@ -131,9 +131,14 @@ task-success denominator.
 
 The empty tote (`m3_franka_tote_empty`) uses a 3 mm nominal closed opening,
 reduced from 4 mm. The authored fingertip faces give an actual gap of 2.960 mm.
-Both hands keep the same wrist poses and lift/carry/place motion. The 80 mm
-release opening, bag mesh and material, friction, and solver settings stay
-fixed. Other bag recipes keep their 4 mm opening.
+Both pinch centers move 5 mm down so nearby coarse handle vertices lie inside
+the finite fingertip faces. The relative lift/carry/place motion, 80 mm release
+opening, bag mesh and material, friction, and solver settings stay fixed.
+Other bag recipes keep their 4 mm opening and original pinch centers.
+
+The closure-only 3 mm trial retained both handles for one full run. Its repeat
+lost one handle late in the hold. Keep these attempts separate from trials
+with the shifted pinch centers.
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \

@@ -27,7 +27,17 @@ def _tick(clock: wp.array[float], dt: float):
 
 
 class BagRobotScene:
-    def __init__(self, scene_id, *, device=None, substeps=10, iterations=40, use_cuda_graph=True, closed_opening=0.004):
+    def __init__(
+        self,
+        scene_id,
+        *,
+        device=None,
+        substeps=10,
+        iterations=40,
+        use_cuda_graph=True,
+        closed_opening=0.004,
+        grip_z_offset=0.0,
+    ):
         if scene_id not in SCENE_IDS:
             raise ValueError(scene_id)
         if int(substeps) != substeps or not 2 <= substeps <= 10 or substeps % 2:
@@ -107,7 +117,8 @@ class BagRobotScene:
         width, depth, height = mesh.metadata["bag_body_dimensions_m"]
         # Offset shoulder patches give the complete palms room; the bag mesh is unchanged.
         self.grip_x = 0.04
-        grip_z = bottom + height + 0.14 * np.sqrt(1.0 - (self.grip_x / (width / 4.0)) ** 2)
+        self.grip_z_offset = float(grip_z_offset)
+        grip_z = bottom + height + 0.14 * np.sqrt(1.0 - (self.grip_x / (width / 4.0)) ** 2) + self.grip_z_offset
         self.grip_centers = [(-self.grip_x, -depth / 2, grip_z), (self.grip_x, depth / 2, grip_z)]
         rotation = (1.0, 0.0, 0.0, 0.0)
         self.closed_opening = float(closed_opening)
@@ -347,6 +358,7 @@ class BagRobotScene:
                 "rigid_soft_extra_detection_gap_m": 0.01,
                 "rigid_soft_full_surface_contact": True,
                 "nominal_closed_finger_opening_m": self.closed_opening,
+                "grip_z_offset_m": self.grip_z_offset,
                 "robot_pose_integration": "External rigid VBD: input FK at t; output FK at t+dt",
             },
             "robot_provenance": [hand.provenance for hand in self.hands],

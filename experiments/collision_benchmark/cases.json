@@ -1366,11 +1366,12 @@
       "kwargs": {
         "substeps": 10,
         "iterations": 40,
-        "closed_opening": 0.003
+        "closed_opening": 0.003,
+        "grip_z_offset": -0.005
       },
       "env": {},
       "replay": {},
-      "recorded_status": "Prepared handle hold; 3 mm nominal finger opening",
+      "recorded_status": "Prepared handle hold; 3 mm opening; pinch centers 5 mm lower",
       "frame_dt_s": 0.03333333333333333,
       "substeps": 10,
       "substep_dt_s": 0.003333333333333333,
@@ -1411,7 +1412,8 @@
         "dynamic": false
       },
       "notes": [
-        "2026-11-04: reduce nominal finger opening from 4 mm to 3 mm. Keep mesh, material, friction, wrist motion and solver settings fixed. Preserve the earlier 4 mm results as the historical baseline."
+        "2026-11-04: reduce nominal finger opening from 4 mm to 3 mm. Keep mesh, material, friction, wrist motion and solver settings fixed. Preserve the earlier 4 mm results as the historical baseline.",
+        "2026-11-04: lower both pinch centers by 5 mm to put nearby coarse handle vertices inside the finite fingertip faces. The 3 mm closure-only repeat lost one handle late in the hold. Preserve those trials. Keep material, friction, robot geometry, motion offsets and solver settings fixed."
       ],
       "transport_windows": [
         [
