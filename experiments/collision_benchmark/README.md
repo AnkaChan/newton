@@ -12,7 +12,8 @@ The current registry also includes a passive 52-card stacking scene with no
 moving ball. It is an added scene, separate from the recorded nine-case
 manipulation comparison.
 
-The current empty-shopping-tote recipe uses a 3 mm closed finger opening.
+The current empty-shopping-tote recipe uses a 5 mm closed finger opening
+and centers the pinch patches on handle vertices.
 The recorded nine-case campaign used 4 mm. Use its pinned reproduction guide
 to replay that older comparison.
 
@@ -129,16 +130,19 @@ task-success denominator.
 
 ## Shopping bag grip
 
-The empty tote (`m3_franka_tote_empty`) uses a 3 mm nominal closed opening,
-reduced from 4 mm. The authored fingertip faces give an actual gap of 2.960 mm.
-Both pinch centers move 5 mm down so nearby coarse handle vertices lie inside
-the finite fingertip faces. The relative lift/carry/place motion, 80 mm release
-opening, bag mesh and material, friction, and solver settings stay fixed.
-Other bag recipes keep their 4 mm opening and original pinch centers.
+The empty tote (`m3_franka_tote_empty`) uses a 5 mm nominal closed opening,
+which gives a 4.960 mm physical gap. The finite fingertip faces center on
+original handle vertices 459 and 513. Each wrist moves 14.145 mm outward and
+2.504 mm upward from the archived pose. The TCP centers are approximately
+(−0.054145, −0.05, 0.655931) m and (+0.054145, +0.05, 0.655931) m.
 
-The closure-only 3 mm trial retained both handles for one full run. Its repeat
-lost one handle late in the hold. Keep these attempts separate from trials
-with the shifted pinch centers.
+The relative lift/carry/place motion, 80 mm release opening, bag mesh and
+material, friction and solver settings stay fixed. Other bag recipes keep
+their original 4 mm opening and pinch centers.
+
+Closure-only changes and a smaller 5 mm downward pose shift did not retain
+both handles in every full repeat. The report preserves those attempts.
+The centered-pose recipe is tested separately.
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-dat-ogc uv run --no-sync python \

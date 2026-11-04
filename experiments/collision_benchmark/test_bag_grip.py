@@ -110,6 +110,48 @@ class BagGripTests(unittest.TestCase):
                 if expected_count:
                     self.assertGreater(float(inset[inside_face].min()), 0.0019)
 
+    def test_center_pinch_on_original_handle_vertices(self):
+        """Center both finite pads on handle vertices without changing material or relative motion."""
+        centered = BagRobotScene(
+            "m3_franka_tote_empty",
+            device="cuda:0",
+            use_cuda_graph=False,
+            closed_opening=0.005,
+            grip_x=0.054144661873579025,
+            grip_z_offset=0.024055231662088783,
+        )
+        baseline = BagRobotScene("m3_franka_tote_empty", device="cuda:0", use_cuda_graph=False, closed_opening=0.005)
+        self._assert_same_soft_material(baseline, centered)
+        self.assertEqual(baseline.metrics()["physics_parameters"]["grip_x_m"], 0.04)
+        self.assertEqual(baseline.metrics()["physics_parameters"]["grip_z_offset_m"], 0.0)
+        self.assertEqual(centered.metrics()["physics_parameters"]["grip_x_m"], 0.054144661873579025)
+        self.assertGreater(min(centered.initial_hand_to_hand), 0.0)
+        for index, (original, changed, center, audit) in enumerate(
+            zip(baseline.drivers, centered.drivers, centered.grip_centers, centered.initial_geometry, strict=True)
+        ):
+            self.assertEqual(audit["vertices_inside_robot_solids"], 0)
+            self.assertGreater(audit["robot_clearance_above_table_plane_m"], 0)
+            self.assertAlmostEqual(audit["physical_tip_aperture_m"], 0.00496, delta=1e-8)
+            # Original vertices 459/513 lie on the two opposing handle shoulders.
+            local = (centered.initial_q[(459, 513)[index]] - center) * [1, -1, -1]
+            xmin, xmax = audit["tip_contact_span_x_in_tcp_m"]
+            zmin, zmax = audit["tip_contact_span_z_in_tcp_m"]
+            np.testing.assert_allclose(local[[0, 2]], [(xmin + xmax) / 2, (zmin + zmax) / 2], rtol=0, atol=8e-8)
+            self.assertLess(abs(local[1]), audit["physical_tip_aperture_m"] / 2)
+            self.assertGreater(min(local[0] - xmin, xmax - local[0]), 0.00874)
+            self.assertGreater(min(local[2] - zmin, zmax - local[2]), 0.00924)
+            for name in ("times", "rotations", "openings"):
+                np.testing.assert_array_equal(getattr(original, name).numpy(), getattr(changed, name).numpy())
+            old_positions, new_positions = original.positions.numpy(), changed.positions.numpy()
+            offset = np.asarray(center) - baseline.grip_centers[index]
+            np.testing.assert_allclose(
+                new_positions - old_positions, np.tile(offset, (len(old_positions), 1)), rtol=0, atol=6e-8
+            )
+            np.testing.assert_allclose(
+                new_positions - new_positions[0], old_positions - old_positions[0], rtol=0, atol=6e-8
+            )
+            np.testing.assert_array_equal(changed.openings.numpy()[7:], np.full(3, 0.08, dtype=np.float32))
+
 
 if __name__ == "__main__":
     unittest.main()

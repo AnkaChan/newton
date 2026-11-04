@@ -36,6 +36,7 @@ class BagRobotScene:
         iterations=40,
         use_cuda_graph=True,
         closed_opening=0.004,
+        grip_x=0.04,
         grip_z_offset=0.0,
     ):
         if scene_id not in SCENE_IDS:
@@ -116,7 +117,7 @@ class BagRobotScene:
         mesh = cloth_mesh(self.bag_name, resolution="coarse")
         width, depth, height = mesh.metadata["bag_body_dimensions_m"]
         # Offset shoulder patches give the complete palms room; the bag mesh is unchanged.
-        self.grip_x = 0.04
+        self.grip_x = float(grip_x)
         self.grip_z_offset = float(grip_z_offset)
         grip_z = bottom + height + 0.14 * np.sqrt(1.0 - (self.grip_x / (width / 4.0)) ** 2) + self.grip_z_offset
         self.grip_centers = [(-self.grip_x, -depth / 2, grip_z), (self.grip_x, depth / 2, grip_z)]
@@ -358,12 +359,13 @@ class BagRobotScene:
                 "rigid_soft_extra_detection_gap_m": 0.01,
                 "rigid_soft_full_surface_contact": True,
                 "nominal_closed_finger_opening_m": self.closed_opening,
+                "grip_x_m": self.grip_x,
                 "grip_z_offset_m": self.grip_z_offset,
                 "robot_pose_integration": "External rigid VBD: input FK at t; output FK at t+dt",
             },
             "robot_provenance": [hand.provenance for hand in self.hands],
             "boundary_conditions": "Table fixed; two original detached hands prescribed through FK; all bag and payload particles dynamic.",
-            "operation_change": "Original crown jaw patches moved to opposite handle shoulders X=-/+40 mm so full palms have space. Real 17.5 mm fingertip width replaces 80 mm box-jaw width. Prepared contact hold; no acquisition claim.",
+            "operation_change": f"Original crown jaw patches moved to opposite handle shoulders X=-/+{1000 * self.grip_x:g} mm so full palms have space. Real 17.5 mm fingertip width replaces 80 mm box-jaw width. Prepared contact hold; no acquisition claim.",
             "initial_grip_centers_m": [list(p) for p in self.grip_centers],
             "initial_geometry_audit": self.initial_geometry,
             "initial_hand_vertex_separation_m": self.initial_hand_to_hand,
