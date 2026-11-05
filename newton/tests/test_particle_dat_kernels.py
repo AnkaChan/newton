@@ -222,11 +222,43 @@ def test_truncate_against_planes_keeps_every_vertex_on_its_side(test, device):
     test.assertTrue(np.all(sigma.numpy() <= 1.0) and np.all(sigma.numpy() >= 0.0))
 
 
+def test_commit_budget_rules(test, device):
+    """The path-length rule freezes a vertex that spent its budget; the distance rule admits moves that end inside the budget sphere."""
+    budget = 1.0
+    x_start = wp.zeros(3, dtype=wp.vec3, device=device)
+    anchor = wp.array([[1.0, 0.0, 0.0], [0.6, 0.0, 0.0], [0.8, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    trial = wp.array([[0.5, 0.0, 0.0], [2.0, 0.0, 0.0], [0.8, 1.0, 0.0]], dtype=wp.vec3, device=device)
+    sigma = wp.ones(3, dtype=float, device=device)
+    path = wp.zeros(3, dtype=wp.vec3, device=device)
+    distance = wp.zeros(3, dtype=wp.vec3, device=device)
+    commit_truncated_displacement(x_start, anchor, trial, sigma, budget=budget, anchor_out=path)
+    commit_truncated_displacement(x_start, anchor, trial, sigma, budget=budget, anchor_out=distance, distance_rule=True)
+    path_np, distance_np = path.numpy(), distance.numpy()
+    # spent budget, step back toward x_start: frozen by the path rule, admitted by the distance rule
+    np.testing.assert_allclose(path_np[0], [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(distance_np[0], [0.5, 0.0, 0.0], atol=1e-6)
+    # outward step along the travelled direction: both rules stop at the budget
+    np.testing.assert_allclose(path_np[1], [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(distance_np[1], [1.0, 0.0, 0.0], atol=1e-6)
+    # sideways step: the path rule leaves only the remaining length, the distance rule reaches the sphere
+    np.testing.assert_allclose(path_np[2], [0.8, 0.2, 0.0], atol=1e-6)
+    np.testing.assert_allclose(distance_np[2], [0.8, 0.6, 0.0], atol=1e-6)
+    test.assertLessEqual(np.linalg.norm(distance_np, axis=1).max(), budget + 1e-6)
+
+
 devices = get_test_devices()
 
 
 class TestParticleDatKernels(unittest.TestCase):
     pass
+
+
+add_function_test(
+    TestParticleDatKernels,
+    "test_commit_budget_rules",
+    test_commit_budget_rules,
+    devices=devices,
+)
 
 
 add_function_test(
