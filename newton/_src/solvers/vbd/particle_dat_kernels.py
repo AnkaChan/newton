@@ -795,6 +795,7 @@ def _vertex_triangle_row_geometry(
     tri_indices: wp.array2d[wp.int32],
     n: wp.vec3,
     dt: float,
+    along_plane_normal: int,
 ):
     """Contact direction, signed witness gap, barycentric weights, the row's inertia
     metric and the relative displacement of the vertex against its witness since
@@ -817,9 +818,10 @@ def _vertex_triangle_row_geometry(
     witness = bary[0] * a + bary[1] * b + bary[2] * c
     diff = pos[v] - witness
     dis = wp.length(diff)
+    # along_plane_normal == 1: the design-note variant, force and gap along the stored plane normal
     direction = n
-    gap = float(0.0)
-    if dis > _CONTACT_DIRECTION_EPS:
+    gap = wp.dot(n, diff)
+    if along_plane_normal == 0 and dis > _CONTACT_DIRECTION_EPS:
         direction = diff / dis
         if wp.dot(direction, n) < 0.0:
             direction = -direction
@@ -846,6 +848,7 @@ def _edge_edge_row_geometry(
     n: wp.vec3,
     dt: float,
     parallel_eps: float,
+    along_plane_normal: int,
 ):
     """Contact direction (e1 positive), signed witness gap, the (s, t) weights, the
     inertia metric and the relative displacement of the e1 witness against the e2
@@ -869,9 +872,10 @@ def _edge_edge_row_geometry(
     c2 = e2_a + (e2_b - e2_a) * t
     diff = c1 - c2
     dis = wp.length(diff)
+    # along_plane_normal == 1: the design-note variant, force and gap along the stored plane normal
     direction = n
-    gap = float(0.0)
-    if dis > _CONTACT_DIRECTION_EPS:
+    gap = wp.dot(n, diff)
+    if along_plane_normal == 0 and dis > _CONTACT_DIRECTION_EPS:
         direction = diff / dis
         if wp.dot(direction, n) < 0.0:
             direction = -direction
@@ -960,6 +964,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     damping: float,
     friction_mu: float,
     parallel_eps: float,
+    along_plane_normal: int,
     stride: int,
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -984,7 +989,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
             e1 = collision_info.edge_colliding_edges[2 * i]
             e2 = collision_info.edge_colliding_edges[2 * i + 1]
             n, gap, s, t, rho_inertia, rel = _edge_edge_row_geometry(
-                e1, e2, pos, pos_prev, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
+                e1, e2, pos, pos_prev, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps, along_plane_normal
             )
             normal_force, normal_stiffness, friction_force, friction_jacobian, _transmitted = _alm_contact_response(
                 gap,
@@ -1037,7 +1042,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
             v = collision_info.vertex_colliding_triangles[2 * i]
             tri = collision_info.vertex_colliding_triangles[2 * i + 1]
             n, gap, bary, rho_inertia, rel = _vertex_triangle_row_geometry(
-                v, tri, pos, pos_prev, inv_mass, tri_indices, planes.vt_normal[i], dt
+                v, tri, pos, pos_prev, inv_mass, tri_indices, planes.vt_normal[i], dt, along_plane_normal
             )
             normal_force, normal_stiffness, friction_force, friction_jacobian, _transmitted = _alm_contact_response(
                 gap,
@@ -1090,6 +1095,7 @@ def _update_alm_contact_multipliers_kernel(
     wall_stiffness_ratio: float,
     friction_mu: float,
     parallel_eps: float,
+    along_plane_normal: int,
     stride: int,
     alm: ParticleContactAlmState,
 ):
@@ -1106,7 +1112,7 @@ def _update_alm_contact_multipliers_kernel(
             e1 = collision_info.edge_colliding_edges[2 * i]
             e2 = collision_info.edge_colliding_edges[2 * i + 1]
             n, gap, _s, _t, rho_inertia, rel = _edge_edge_row_geometry(
-                e1, e2, pos, pos_prev, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
+                e1, e2, pos, pos_prev, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps, along_plane_normal
             )
             rho = contact_alm_rho(rho_inertia, stiffness, rho_scale, rho_floor_ratio)
             force, _k = alm_contact_row_smooth(
@@ -1133,7 +1139,7 @@ def _update_alm_contact_multipliers_kernel(
             v = collision_info.vertex_colliding_triangles[2 * i]
             tri = collision_info.vertex_colliding_triangles[2 * i + 1]
             n, gap, _bary, rho_inertia, rel = _vertex_triangle_row_geometry(
-                v, tri, pos, pos_prev, inv_mass, tri_indices, planes.vt_normal[i], dt
+                v, tri, pos, pos_prev, inv_mass, tri_indices, planes.vt_normal[i], dt, along_plane_normal
             )
             rho = contact_alm_rho(rho_inertia, stiffness, rho_scale, rho_floor_ratio)
             force, _k = alm_contact_row_smooth(
@@ -1227,6 +1233,7 @@ def accumulate_alm_contact_force_and_hessian(
     damping: float,
     friction_mu: float,
     parallel_eps: float,
+    force_along_plane_normal: bool = False,
     launch_size: int,
     particle_forces: wp.array,
     particle_hessians: wp.array,
@@ -1257,6 +1264,7 @@ def accumulate_alm_contact_force_and_hessian(
             float(damping),
             float(friction_mu),
             float(parallel_eps),
+            1 if force_along_plane_normal else 0,
             launch_size,
         ],
         outputs=[particle_forces, particle_hessians],
@@ -1282,6 +1290,7 @@ def update_alm_contact_multipliers(
     wall_stiffness_ratio: float = 9.0,
     friction_mu: float,
     parallel_eps: float,
+    force_along_plane_normal: bool = False,
     launch_size: int,
 ) -> None:
     """Launch the once-per-sweep multiplier update at the trial pose."""
@@ -1306,6 +1315,7 @@ def update_alm_contact_multipliers(
             float(wall_stiffness_ratio),
             float(friction_mu),
             float(parallel_eps),
+            1 if force_along_plane_normal else 0,
             launch_size,
         ],
         outputs=[alm],
