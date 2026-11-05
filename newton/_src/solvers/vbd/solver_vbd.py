@@ -14,7 +14,7 @@ import warp as wp
 
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
-from ...geometry import ParticleFlags
+from ...geometry import GeoType, ParticleFlags
 from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
@@ -39,6 +39,7 @@ from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
+from .suture_kernels import build_tet_neighbors
 from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
@@ -133,6 +134,9 @@ _SUTURE_PARTICLE_ATTRIBUTES = (
     ("suture_puncture_force", 0.5),
     ("suture_puncture_cos", 0.5),
 )
+
+# The six edges of a tet as local vertex pairs, for the mean edge length of the spacing rule.
+_TET_EDGE_PAIRS = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
 
 _SCENE_ATTRIBUTES = {
     "rigid_contact_history": (wp.bool, False, "newton:vbd:rigid:contactHistory"),
@@ -499,6 +503,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Rigid body - penetration-free DAT truncation
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
+        # Suturing (experimental): suture needles authored with ModelBuilder.add_suture_needle
+        suture_tunnel_update_interval: int = 1,  # Substeps between needle state updates
+        suture_point_spacing: float | None = None,  # Tunnel point spacing [m]; None = clamp(0.5 x mean tet edge, 0.5 mm, 2 mm)
+        suture_gate_slack: float = 1.0e-3,  # Extra gate radius beyond needle radius + margin + gap + particle radius [m]
+        suture_armed: bool = False,  # True: the first tip contact punctures; False: force and angle test
+        suture_closest_search_window: int = 1,  # Rod segments searched on each side of the cached segment per refresh
         deterministic: wp.DeterministicMode | None = None,
         enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
@@ -772,6 +782,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
             tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
+            suture_tunnel_update_interval: Substeps between two updates of the suture needle state (puncture
+                test, tet walk, tunnel point creation, contact gate). ``1`` updates every substep.
+            suture_point_spacing: Distance of needle tip travel between two tunnel points [m]. ``None``
+                uses half the mean tet edge length of the model, clamped to [0.5 mm, 2 mm].
+            suture_gate_slack: Slack added to the contact gate radius [m]. The gate radius is the needle
+                group's largest capsule radius plus its largest shape margin plus the pipeline's soft
+                contact gap plus the largest particle radius plus this slack.
+            suture_armed: ``True`` opens a tunnel at the first tip contact with tissue. ``False`` requires
+                the tip's summed contact normal force to exceed ``vbd.suture_puncture_force`` while the
+                tip direction is within the angle given by ``vbd.suture_puncture_cos`` of the inward
+                surface normal.
+            suture_closest_search_window: Number of rod segments searched on each side of a tunnel
+                point's cached segment when its closest place on the rod curve is refreshed.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
@@ -1166,6 +1189,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         # Initialize rigid penetration-free (DAT) truncation state
         self._init_rigid_penetration_free(model, rigid_soft_dat_use_interval_arithmetic)
+
+        # Initialize suturing state (tunnel points, needle state machine, contact gate)
+        self._init_suture_system(
+            model,
+            suture_tunnel_update_interval,
+            suture_point_spacing,
+            suture_gate_slack,
+            suture_armed,
+            suture_closest_search_window,
+        )
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -3372,6 +3405,112 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._rigid_dat_body_max_displacement = wp.full(
             model.body_count, rigid_soft_max_displacement, dtype=float, device=self.device
         )
+
+    def _init_suture_system(
+        self,
+        model: Model,
+        tunnel_update_interval: int,
+        point_spacing: float | None,
+        gate_slack: float,
+        armed: bool,
+        closest_search_window: int,
+    ) -> None:
+        """Allocate the tunnel point rows and the needle state of every suture needle.
+
+        Capacities are fixed at construction: ``T`` tunnels of ``Q`` points per needle, with ``T`` and
+        ``Q`` the largest authored capacities. The flat point index is ``(needle * T + tunnel) * Q + q``.
+        """
+        self.suture_needle_count = int(getattr(model, "suture_needle_count", 0) or 0)
+        self.suture_tunnel_update_interval = int(tunnel_update_interval)
+        self.suture_armed = bool(armed)
+        self.suture_closest_search_window = int(closest_search_window)
+        self._suture_point_spacing = 0.0
+        self._suture_gate_radius = np.zeros(0, dtype=np.float32)
+        if self.suture_needle_count == 0:
+            return
+        if self.suture_tunnel_update_interval < 1:
+            raise ValueError("suture_tunnel_update_interval must be at least 1")
+        if self.suture_closest_search_window < 1:
+            raise ValueError("suture_closest_search_window must be at least 1")
+        if model.tet_count == 0:
+            raise ValueError("Suture needles need a tetrahedral soft body in the model")
+        if model.particle_world_start is not None and model.world_count > 1:
+            raise NotImplementedError("Suture needles support a single world for now")
+
+        device = self.device
+        max_tunnels = model.suture_needle_max_tunnels.numpy()
+        max_points = model.suture_needle_max_points.numpy()
+        n = self.suture_needle_count
+        tunnels = int(max_tunnels.max())
+        points = int(max_points.max())
+        self._suture_tunnel_capacity = tunnels
+        self._suture_point_capacity = points
+        total = n * tunnels * points
+
+        # Tunnel point rows (chapter 1.5).
+        self._suture_point_tet = wp.full(total, -1, dtype=wp.int32, device=device)
+        self._suture_point_bary = wp.zeros(total, dtype=wp.vec4, device=device)
+        self._suture_point_active = wp.zeros(total, dtype=wp.int32, device=device)
+        self._suture_point_segment = wp.full(total, -1, dtype=wp.int32, device=device)
+        self._suture_point_u = wp.zeros(total, dtype=wp.float32, device=device)
+        self._suture_point_tangent = wp.zeros(total, dtype=wp.vec3, device=device)
+        self._suture_point_segment_start = wp.full(total, -1, dtype=wp.int32, device=device)
+        self._suture_point_u_start = wp.zeros(total, dtype=wp.float32, device=device)
+        self._suture_point_lambda = wp.zeros(total, dtype=wp.vec3, device=device)
+        self._suture_point_lambda_t = wp.zeros(total, dtype=wp.float32, device=device)
+        self._suture_point_rho = wp.zeros(total, dtype=wp.float32, device=device)
+        self._suture_point_rho_t = wp.zeros(total, dtype=wp.float32, device=device)
+        self._suture_point_ds = wp.zeros(total, dtype=wp.float32, device=device)
+        self._suture_point_stiffness = wp.full(total, float("inf"), dtype=wp.float32, device=device)
+
+        # Needle and tunnel state (chapter 2.5).
+        self._suture_needle_state = wp.zeros(n, dtype=wp.int32, device=device)
+        self._suture_needle_tunnel = wp.full(n, -1, dtype=wp.int32, device=device)
+        self._suture_tunnel_count = wp.zeros(n, dtype=wp.int32, device=device)
+        self._suture_tunnel_state = wp.zeros(n * tunnels, dtype=wp.int32, device=device)
+        self._suture_tunnel_point_count = wp.zeros(n * tunnels, dtype=wp.int32, device=device)
+        self._suture_needle_tip_tet = wp.full(n, -1, dtype=wp.int32, device=device)
+        self._suture_needle_last_tip = wp.zeros(n, dtype=wp.vec3, device=device)
+        self._suture_needle_travel = wp.zeros(n, dtype=wp.float32, device=device)
+        self._suture_needle_tip_force = wp.zeros(n, dtype=wp.float32, device=device)
+        self._suture_needle_tip_record = wp.full(n, -1, dtype=wp.int32, device=device)
+        self._suture_needle_tip_record_key = wp.zeros(n, dtype=wp.int64, device=device)
+        self._suture_substep = wp.zeros(1, dtype=wp.int32, device=device)
+        self._suture_point_overflow = wp.zeros(1, dtype=wp.int32, device=device)
+
+        tet_indices = model.tet_indices.numpy().reshape(-1, 4)
+        self._suture_tet_neighbors = wp.array(build_tet_neighbors(tet_indices), dtype=wp.int32, device=device)
+
+        # Tunnel point spacing: half the mean tet edge length, clamped to [0.5 mm, 2 mm].
+        if point_spacing is None:
+            q = model.particle_q.numpy()
+            edges = np.concatenate(
+                [np.linalg.norm(q[tet_indices[:, a]] - q[tet_indices[:, b]], axis=1) for a, b in _TET_EDGE_PAIRS]
+            )
+            self._suture_point_spacing = float(np.clip(0.5 * float(edges.mean()), 0.5e-3, 2.0e-3))
+        else:
+            if not (point_spacing > 0.0):
+                raise ValueError("suture_point_spacing must be positive")
+            self._suture_point_spacing = float(point_spacing)
+
+        # Gate radius per needle: largest capsule radius and shape margin of the group, the pipeline's
+        # soft contact gap, the largest particle radius, plus the slack.
+        shape_gate = model.shape_contact_gate.numpy()
+        shape_type = model.shape_type.numpy()
+        shape_scale = model.shape_scale.numpy()
+        shape_margin = model.shape_margin.numpy() if model.shape_margin is not None and model.shape_margin.shape[0] > 0 else None
+        groups = model.suture_needle_group.numpy()
+        gap = float(getattr(self.collision_pipeline, "soft_contact_gap", 0.0) or 0.0) if self.collision_pipeline is not None else 0.0
+        particle_radius = float(model.particle_radius.numpy().max()) if model.particle_count > 0 else 0.0
+        radii = np.zeros(n, dtype=np.float32)
+        for needle in range(n):
+            in_group = (shape_gate & int(groups[needle])) != 0
+            capsule = in_group & (shape_type == int(GeoType.CAPSULE))
+            needle_radius = float(shape_scale[capsule, 0].max()) if capsule.any() else 0.0
+            margin = float(shape_margin[in_group].max()) if shape_margin is not None and in_group.any() else 0.0
+            radii[needle] = needle_radius + margin + gap + particle_radius + float(gate_slack)
+        self._suture_gate_radius = radii
+        self._suture_gate_radius_wp = wp.array(radii, dtype=wp.float32, device=device)
 
     def _init_rigid_dat_body_bounding_radius(self, model: Model):
         """Compute a conservative surface radius about each rigid body's COM.
