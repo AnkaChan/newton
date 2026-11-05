@@ -346,9 +346,12 @@ class SolverVBD(SolverBase, CouplingInterface):
         particle_self_contact_method: str = "penalty_dat",
         particle_dat_plane_update_interval: int = 1,
         particle_dat_truncation_iterations: int = 2,
+        particle_dat_budget_rule: str = "path_length",
         particle_contact_alm_rho_scale: float = 1.0,
         particle_contact_alm_rho_floor_ratio: float = 1.0,
         particle_contact_alm_hard_gap: float | None = None,
+        particle_contact_alm_transition_band: float = 0.0,
+        particle_contact_alm_wall_stiffness_ratio: float = 9.0,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -478,8 +481,12 @@ class SolverVBD(SolverBase, CouplingInterface):
                 VBD iterate penetrate, and truncates the accumulated motion against
                 the stored planes at a fixed cadence and once more at the end of the
                 step; the committed state is penetration-free for every stored pair.
-                Requires ``particle_enable_self_contact=True``, one soft self-contact
-                detection per step (``PRE_INIT``), and is incompatible with
+                The contact row is a compliant ALM cushion (``soft_contact_ke`` over the
+                margin) with a hard wall, plus gap-rate damping with ``soft_contact_kd``
+                on the closing motion inside the margin and Coulomb friction with
+                ``soft_contact_mu`` as a tangential multiplier capped at ``mu`` times the
+                row's normal force. Requires ``particle_enable_self_contact=True``, one soft
+                self-contact detection per step (``PRE_INIT``), and is incompatible with
                 ``rigid_soft_enable_dat``.
 
                 .. experimental::
@@ -493,6 +500,16 @@ class SolverVBD(SolverBase, CouplingInterface):
             particle_dat_truncation_iterations: With ``"alm_dat"``, number of
                 truncate-and-rebuild rounds applied to the final iterate before the
                 step commits. Defaults to ``2``.
+            particle_dat_budget_rule: With ``"alm_dat"``, how the motion budget bounds the
+                committed displacement from the detection pose. ``"path_length"``
+                (default) admits a commit only while the distance already travelled plus
+                the new step fits the budget, so a vertex that has spent its budget cannot
+                move again before the next detection, not even back toward the detection
+                pose. ``"distance"`` admits any commit whose end point stays within the
+                budget of the detection pose and cuts a commit that leaves the budget
+                sphere at the sphere, so corrections back toward the detection pose stay
+                possible. Both rules keep the committed state within the certified reach
+                of the stored planes.
             particle_contact_alm_rho_scale: With ``"alm_dat"``, positive multiplier on the
                 contact rows' inertia-derived ALM metric. Larger values move the row
                 toward a penalty response within a sweep (faster, stiffer) without
@@ -509,6 +526,16 @@ class SolverVBD(SolverBase, CouplingInterface):
                 plane, so the final truncation stays a safety net and does not damp
                 sliding. Must be smaller than the margin. Defaults to a quarter of
                 ``particle_self_contact_margin``.
+            particle_contact_alm_transition_band: With ``"alm_dat"``, width [m] of the band
+                above the hard wall in which the cushion stiffness rises smoothly from
+                ``soft_contact_ke`` to the wall stiffness, so the row passes from its
+                compliant to its hard regime without a stiffness jump. ``0`` keeps the
+                piecewise law (default). Must not exceed the cushion width
+                (margin minus hard gap).
+            particle_contact_alm_wall_stiffness_ratio: With ``"alm_dat"`` and a positive
+                transition band, the wall stiffness as a multiple of the row's ALM
+                metric ``rho``. The in-sweep stiffness at the wall is then within
+                ``rho / (ratio + 1)`` of the hard-regime value ``rho``. Defaults to ``9``.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -986,11 +1013,26 @@ class SolverVBD(SolverBase, CouplingInterface):
         if self._alm_dat and not (0.0 <= particle_contact_alm_hard_gap < _sc_margin):
             raise ValueError("particle_contact_alm_hard_gap must lie in [0, particle_self_contact_margin)")
         self.particle_contact_alm_hard_gap = float(particle_contact_alm_hard_gap)
+        if particle_contact_alm_transition_band < 0.0 or particle_contact_alm_wall_stiffness_ratio < 0.0:
+            raise ValueError(
+                "particle_contact_alm_transition_band and particle_contact_alm_wall_stiffness_ratio must be nonnegative"
+            )
+        if self._alm_dat and particle_contact_alm_transition_band > _sc_margin - self.particle_contact_alm_hard_gap:
+            raise ValueError(
+                "particle_contact_alm_transition_band must not exceed the cushion width (margin - hard gap)"
+            )
+        self.particle_contact_alm_transition_band = float(particle_contact_alm_transition_band)
+        self.particle_contact_alm_wall_stiffness_ratio = float(particle_contact_alm_wall_stiffness_ratio)
         if self._alm_dat and particle_dat_truncation_iterations < 1:
             raise ValueError(
                 "particle_dat_truncation_iterations must be at least 1 with alm_dat: the committed state is the "
                 "truncated iterate, so the final truncation cannot be skipped"
             )
+        if particle_dat_budget_rule not in ("path_length", "distance"):
+            raise ValueError(
+                f"particle_dat_budget_rule must be 'path_length' or 'distance', got {particle_dat_budget_rule!r}"
+            )
+        self.particle_dat_budget_rule = particle_dat_budget_rule
         # thickness reserved on each side of a stored plane; the certificate is "no crossing"
         self._dat_margin = 0.0
         self._dat_planes = None
@@ -2864,6 +2906,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             # the whole history (all worlds) rather than tracking per-world rows
             self._dat_alm_state.vt_lambda.zero_()
             self._dat_alm_state.ee_lambda.zero_()
+            self._dat_alm_state.vt_lambda_t.zero_()
+            self._dat_alm_state.ee_lambda_t.zero_()
             self._dat_alm_state.prev_vt_offsets.zero_()
             self._dat_alm_state.prev_ee_offsets.zero_()
 
@@ -3376,6 +3420,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.truncation_ts,
             budget=self._alm_dat_budget(),
             anchor_out=self._dat_anchor,
+            distance_rule=self.particle_dat_budget_rule == "distance",
         )
         build_contact_planes(
             self.model,
@@ -4044,6 +4089,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     dt,
                     color,
                     state_in.particle_q,
+                    self.particle_q_prev,
                     self.trimesh_collision_info,
                     self._dat_planes,
                     self._dat_alm_state,
@@ -4052,6 +4098,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                     rho_scale=self.particle_contact_alm_rho_scale,
                     rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
                     hard_gap=self.particle_contact_alm_hard_gap,
+                    transition_band=self.particle_contact_alm_transition_band,
+                    wall_stiffness_ratio=self.particle_contact_alm_wall_stiffness_ratio,
+                    damping=self.model.soft_contact_kd,
+                    friction_mu=self.model.soft_contact_mu,
                     parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
                     launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
                     particle_forces=self.particle_forces,
@@ -4164,6 +4214,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 model,
                 dt,
                 state_in.particle_q,
+                self.particle_q_prev,
                 self.trimesh_collision_info,
                 self._dat_planes,
                 self._dat_alm_state,
@@ -4172,6 +4223,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                 rho_scale=self.particle_contact_alm_rho_scale,
                 rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
                 hard_gap=self.particle_contact_alm_hard_gap,
+                transition_band=self.particle_contact_alm_transition_band,
+                wall_stiffness_ratio=self.particle_contact_alm_wall_stiffness_ratio,
+                friction_mu=self.model.soft_contact_mu,
                 parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
                 launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
             )
