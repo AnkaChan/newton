@@ -1294,6 +1294,33 @@ class Model:
         self.attachment_particle_body_world: wp.array[wp.int32] | None = None
         """World index for each attachment, shape [attachment_particle_body_count], int."""
 
+        self.suture_needle_body: wp.array[wp.int32] | None = None
+        """Needle body per suture needle, shape [suture_needle_count], int."""
+        self.suture_needle_tip_shape: wp.array[wp.int32] | None = None
+        """Tip shape per suture needle, shape [suture_needle_count], int."""
+        self.suture_needle_tip_local: wp.array[wp.vec3] | None = None
+        """Tip position in the needle body frame [m], shape [suture_needle_count, 3]."""
+        self.suture_needle_group: wp.array[wp.int32] | None = None
+        """Contact gate bit of each suture needle (``1 << needle``), shape [suture_needle_count], int."""
+        self.suture_needle_max_tunnels: wp.array[wp.int32] | None = None
+        """Tunnel capacity per suture needle, shape [suture_needle_count], int."""
+        self.suture_needle_max_points: wp.array[wp.int32] | None = None
+        """Tunnel point capacity per tunnel, shape [suture_needle_count], int."""
+        self.suture_needle_segment_start: wp.array[wp.int32] | None = None
+        """Rod segment range offsets per suture needle, shape [suture_needle_count + 1], int."""
+        self.suture_segment_body: wp.array[wp.int32] | None = None
+        """Body that moves each rod segment, shape [suture_segment_count], int."""
+        self.suture_segment_local_a: wp.array[wp.vec3] | None = None
+        """Rod segment start in the body frame [m], toward the tip, shape [suture_segment_count, 3]."""
+        self.suture_segment_local_b: wp.array[wp.vec3] | None = None
+        """Rod segment end in the body frame [m], toward the free end, shape [suture_segment_count, 3]."""
+        self.suture_segment_rest_length: wp.array[wp.float32] | None = None
+        """Rod segment rest length [m], shape [suture_segment_count], float."""
+        self.shape_contact_gate: wp.array[wp.int32] | None = None
+        """Contact gate bits per shape (needle groups), shape [shape_count], int; zero outside needle groups."""
+        self.particle_contact_gate: wp.array[wp.int32] | None = None
+        """Contact gate bits per particle, shape [particle_count], int; written by the solver near suture tunnels."""
+
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
         self.tri_poses: wp.array[wp.mat22] | None = None
@@ -1813,6 +1840,8 @@ class Model:
         """Total number of springs in the system."""
         self.attachment_particle_body_count: int = 0
         """Total number of rigid-body-to-particle attachments in the system."""
+        self.suture_needle_count: int = 0
+        """Total number of suture needles in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
         self.articulation_count: int = 0

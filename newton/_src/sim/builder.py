@@ -2084,6 +2084,32 @@ class ModelBuilder:
         self.attachment_particle_body_world: list[int] = []
         """World indices accumulated for :attr:`Model.attachment_particle_body_world`."""
 
+        # suture needles
+        self.suture_needle_body: list[int] = []
+        """Needle body indices accumulated for :attr:`Model.suture_needle_body`."""
+        self.suture_needle_tip_shape: list[int] = []
+        """Tip shape indices accumulated for :attr:`Model.suture_needle_tip_shape`."""
+        self.suture_needle_tip_local: list[Vec3] = []
+        """Tip positions in the needle body frame [m] accumulated for :attr:`Model.suture_needle_tip_local`."""
+        self.suture_needle_group: list[int] = []
+        """Gate bits accumulated for :attr:`Model.suture_needle_group`."""
+        self.suture_needle_max_tunnels: list[int] = []
+        """Tunnel capacities accumulated for :attr:`Model.suture_needle_max_tunnels`."""
+        self.suture_needle_max_points: list[int] = []
+        """Tunnel point capacities accumulated for :attr:`Model.suture_needle_max_points`."""
+        self.suture_needle_segment_start: list[int] = [0]
+        """Rod segment range offsets accumulated for :attr:`Model.suture_needle_segment_start`."""
+        self.suture_segment_body: list[int] = []
+        """Rod segment bodies accumulated for :attr:`Model.suture_segment_body`."""
+        self.suture_segment_local_a: list[Vec3] = []
+        """Rod segment start points in the body frame [m] accumulated for :attr:`Model.suture_segment_local_a`."""
+        self.suture_segment_local_b: list[Vec3] = []
+        """Rod segment end points in the body frame [m] accumulated for :attr:`Model.suture_segment_local_b`."""
+        self.suture_segment_rest_length: list[float] = []
+        """Rod segment rest lengths [m] accumulated for :attr:`Model.suture_segment_rest_length`."""
+        self.shape_contact_gate: dict[int, int] = {}
+        """Gate bits per shape index, finalized into :attr:`Model.shape_contact_gate`."""
+
         # springs
         self.spring_indices: list[int] = []
         """Spring particle index pairs accumulated for :attr:`Model.spring_indices`."""
@@ -3594,6 +3620,11 @@ class ModelBuilder:
     def attachment_particle_body_count(self) -> int:
         """The number of particle-body attachments in the model."""
         return len(self.attachment_particle_body_body)
+
+    @property
+    def suture_needle_count(self) -> int:
+        """The number of suture needles in the model."""
+        return len(self.suture_needle_body)
 
     @property
     def muscle_count(self):
@@ -11319,6 +11350,122 @@ class ModelBuilder:
             )
         return attachment
 
+    def add_suture_needle(
+        self,
+        needle_body: int,
+        tip_shape: int,
+        *,
+        centerline: Sequence[Vec3],
+        thread_bodies: Sequence[int] | None = None,
+        max_tunnels: int = 4,
+        max_points_per_tunnel: int = 256,
+        label: str | None = None,
+    ) -> int:
+        """Adds a suture needle: a rigid needle whose tip can open a tunnel through tet soft bodies.
+
+        The needle and its thread form one rod curve: the needle centerline, tip
+        first, followed by the centerline of every thread capsule body from the
+        swage to the free end. :class:`~newton.solvers.SolverVBD` holds the rod
+        curve in the tunnel the tip opens and lets it slide with friction. Every
+        shape of the needle body and of the thread bodies receives the needle's
+        gate bit in :attr:`Model.shape_contact_gate`, so the solver can switch off
+        their contact with tissue particles near the tunnel.
+
+        Args:
+            needle_body: Index of the rigid body that carries the needle shapes.
+            tip_shape: Index of the shape on ``needle_body`` whose contacts decide the puncture.
+            centerline: Needle centerline points in the body frame [m], tip first.
+                Any polyline is accepted; consecutive points must be distinct.
+            thread_bodies: Capsule bodies of the thread from the swage to the free
+                end, for example the first element returned by :meth:`add_rod`.
+                ``None`` means the needle carries no thread.
+            max_tunnels: Tunnel capacity of this needle.
+            max_points_per_tunnel: Tunnel point capacity per tunnel.
+            label: Optional label; unused for now, kept for symmetry with other helpers.
+
+        Returns:
+            Index of the suture needle.
+
+        Raises:
+            IndexError: If ``needle_body``, ``tip_shape`` or a thread body is out of
+                range, or ``tip_shape`` does not belong to ``needle_body``.
+            ValueError: If the centerline has fewer than two points, a point is not
+                finite, two consecutive points coincide, a thread body has no
+                capsule shape, a capacity is not positive, or the model already
+                has 31 suture needles.
+        """
+        if needle_body < 0 or needle_body >= self.body_count:
+            raise IndexError(f"Needle body index {needle_body} is out of range for {self.body_count} bodies")
+        if tip_shape < 0 or tip_shape >= self.shape_count:
+            raise IndexError(f"Tip shape index {tip_shape} is out of range for {self.shape_count} shapes")
+        if self.shape_body[tip_shape] != needle_body:
+            raise IndexError(f"Tip shape {tip_shape} belongs to body {self.shape_body[tip_shape]}, not {needle_body}")
+        points = [axis_to_vec3(point) for point in centerline]
+        if len(points) < 2:
+            raise ValueError("Suture needle centerline needs at least two points")
+        for point in points:
+            if not all(math.isfinite(c) for c in point):
+                raise ValueError(f"Suture needle centerline point must be finite, got {tuple(point)}")
+        for a, b in zip(points[:-1], points[1:]):
+            if wp.length(b - a) <= 1.0e-9:
+                raise ValueError("Suture needle centerline has two coincident consecutive points")
+        if max_tunnels < 1 or max_points_per_tunnel < 1:
+            raise ValueError("Suture needle capacities must be positive")
+        needle = self.suture_needle_count
+        if needle > 30:
+            raise ValueError("At most 31 suture needles are supported (one gate bit per needle)")
+        thread_bodies = [] if thread_bodies is None else [int(body) for body in thread_bodies]
+        for body in thread_bodies:
+            if body < 0 or body >= self.body_count:
+                raise IndexError(f"Thread body index {body} is out of range for {self.body_count} bodies")
+
+        group = 1 << needle
+        needle_xform = self.body_q[needle_body]
+
+        for a, b in zip(points[:-1], points[1:]):
+            self.suture_segment_body.append(int(needle_body))
+            self.suture_segment_local_a.append(a)
+            self.suture_segment_local_b.append(b)
+            self.suture_segment_rest_length.append(float(wp.length(b - a)))
+        previous_end = wp.transform_point(needle_xform, points[-1])
+
+        for body in thread_bodies:
+            capsule = None
+            for shape in self.body_shapes.get(body, []):
+                if self.shape_type[shape] == GeoType.CAPSULE:
+                    capsule = shape
+                    break
+            if capsule is None:
+                raise ValueError(f"Thread body {body} has no capsule shape")
+            half_height = float(self.shape_scale[capsule][1])
+            shape_xform = self.shape_transform[capsule]
+            a = wp.transform_point(shape_xform, wp.vec3(0.0, 0.0, -half_height))
+            b = wp.transform_point(shape_xform, wp.vec3(0.0, 0.0, half_height))
+            body_xform = self.body_q[body]
+            a_world = wp.transform_point(body_xform, a)
+            b_world = wp.transform_point(body_xform, b)
+            if wp.length(a_world - previous_end) > wp.length(b_world - previous_end):
+                a, b = b, a
+                a_world, b_world = b_world, a_world
+            self.suture_segment_body.append(int(body))
+            self.suture_segment_local_a.append(a)
+            self.suture_segment_local_b.append(b)
+            self.suture_segment_rest_length.append(float(wp.length(b - a)))
+            previous_end = b_world
+
+        for body in [needle_body, *thread_bodies]:
+            for shape in self.body_shapes.get(body, []):
+                self.shape_contact_gate[shape] = self.shape_contact_gate.get(shape, 0) | group
+
+        self.suture_needle_body.append(int(needle_body))
+        self.suture_needle_tip_shape.append(int(tip_shape))
+        self.suture_needle_tip_local.append(points[0])
+        self.suture_needle_group.append(group)
+        self.suture_needle_max_tunnels.append(int(max_tunnels))
+        self.suture_needle_max_points.append(int(max_points_per_tunnel))
+        self.suture_needle_segment_start.append(len(self.suture_segment_body))
+        return needle
+
     def add_spring(
         self,
         i: int,
@@ -15936,6 +16083,31 @@ class ModelBuilder:
             m.attachment_particle_body_world = _to_wp_array(
                 self.attachment_particle_body_world, wp.int32, requires_grad=False
             )
+
+            # ---------------------
+            # suture needles
+
+            m.suture_needle_count = self.suture_needle_count
+            m.suture_needle_body = _to_wp_array(self.suture_needle_body, wp.int32, requires_grad=False)
+            m.suture_needle_tip_shape = _to_wp_array(self.suture_needle_tip_shape, wp.int32, requires_grad=False)
+            m.suture_needle_tip_local = _to_wp_array(self.suture_needle_tip_local, wp.vec3, requires_grad=False)
+            m.suture_needle_group = _to_wp_array(self.suture_needle_group, wp.int32, requires_grad=False)
+            m.suture_needle_max_tunnels = _to_wp_array(self.suture_needle_max_tunnels, wp.int32, requires_grad=False)
+            m.suture_needle_max_points = _to_wp_array(self.suture_needle_max_points, wp.int32, requires_grad=False)
+            m.suture_needle_segment_start = _to_wp_array(
+                self.suture_needle_segment_start, wp.int32, requires_grad=False
+            )
+            m.suture_segment_body = _to_wp_array(self.suture_segment_body, wp.int32, requires_grad=False)
+            m.suture_segment_local_a = _to_wp_array(self.suture_segment_local_a, wp.vec3, requires_grad=False)
+            m.suture_segment_local_b = _to_wp_array(self.suture_segment_local_b, wp.vec3, requires_grad=False)
+            m.suture_segment_rest_length = _to_wp_array(
+                self.suture_segment_rest_length, wp.float32, requires_grad=False
+            )
+            shape_gate = np.zeros(self.shape_count, dtype=np.int32)
+            for shape, bits in self.shape_contact_gate.items():
+                shape_gate[shape] = bits
+            m.shape_contact_gate = wp.array(shape_gate, dtype=wp.int32)
+            m.particle_contact_gate = wp.zeros(self.particle_count, dtype=wp.int32)
 
             # ---------------------
             # triangles

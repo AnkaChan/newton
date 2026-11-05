@@ -125,6 +125,15 @@ _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
 
 # ``NewtonVbdSceneAPI`` settings: constructor argument -> (dtype, default, USD attribute name).
 # Read by both ``register_custom_attributes`` and ``SolverVBD.__init__``.
+# Per-particle tissue parameters of the suturing feature: grip force per unit tunnel length [N/m],
+# tunnel friction coefficient, puncture force [N] and the cosine of the puncture angle.
+_SUTURE_PARTICLE_ATTRIBUTES = (
+    ("suture_grip", 1.0),
+    ("suture_mu", 0.3),
+    ("suture_puncture_force", 0.5),
+    ("suture_puncture_cos", 0.5),
+)
+
 _SCENE_ATTRIBUTES = {
     "rigid_contact_history": (wp.bool, False, "newton:vbd:rigid:contactHistory"),
     "rigid_joint_linear_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointLinearStiffness"),
@@ -2542,6 +2551,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             stiffness and damping must be finite and non-negative.
           - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
+          - ``vbd:suture_grip``, ``vbd:suture_mu``, ``vbd:suture_puncture_force`` and
+            ``vbd:suture_puncture_cos`` per particle for the suturing feature (tissue grip force per
+            unit tunnel length [N/m], tunnel friction coefficient, puncture force [N], cosine of the
+            puncture angle); defaults 1.0, 0.3, 0.5 and 0.5.
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes. The Dahl and ``joint_is_hard`` attributes are authored in USD as
@@ -2609,6 +2622,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 namespace="vbd",
             )
         )
+        for name, default in _SUTURE_PARTICLE_ATTRIBUTES:
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=Model.AttributeFrequency.PARTICLE,
+                    assignment=Model.AttributeAssignment.MODEL,
+                    dtype=wp.float32,
+                    default=default,
+                    namespace="vbd",
+                )
+            )
 
     # =====================================================
     # Adjacency Building Methods
