@@ -929,11 +929,22 @@ on the rod curve, the tangent :math:`\mathbf{t}` and :math:`\mathbf{P} =
    \qquad
    \boldsymbol{\lambda}_\perp \leftarrow \mathbf{P}\,(\boldsymbol{\lambda}_\perp + \rho\,\mathbf{C}),
 
-where the stiffness is infinite by default, so :math:`k_{\text{eff}} = \rho`
-with :math:`\rho` from the supports of the four vertices and the body, as for
-attachments. The force and the Hessian scatter to the tet vertices with weights
+where the row stiffness is the smallest ``vbd.suture_stiffness`` of the tet's
+four vertices. The default is infinite, so :math:`k_{\text{eff}} = \rho` with
+:math:`\rho` from the supports of the four vertices and the body, as for
+attachments; a finite value gives the compliant law
+:math:`k_{\text{eff}} = k\rho/(k+\rho)` and the multiplier converges to the
+elastic force. The force and the Hessian scatter to the tet vertices with weights
 :math:`w_i` and :math:`w_i^2` in the particle pass and act on the segment's body
 as a wrench in the rigid pass; the multipliers advance after both passes.
+
+A tunnel holds about two points per tet. With hard rows these points fight each
+other through the shared vertices, because a linear tet cannot follow the curved
+tunnel exactly: the multipliers alternate in sign along the tunnel and reach
+0.3 N per point in 100 kPa tissue with 3 mm tets, enough to drag a free block
+along. A finite stiffness of about 1 kN/m removes the fight (multipliers of 10
+to 20 mN) but lets a thread drawn through the tunnel sit up to 1 mm off the
+points; the example keeps the hard default.
 
 **Friction.** Along the tangent the row applies the capped ALM friction of
 body-body contact in one dimension: with the slip :math:`s` between the tissue
@@ -963,6 +974,14 @@ shear back into itself and can drag tissue along a straight needle.
 bit is detected and stored as usual but produces no force, no dual update and
 no DAT plane. Every other pair keeps the penetration-free guarantee of
 :ref:`vbd-dat`.
+
+**Thin threads on coarse tissue.** Per-particle soft contacts act only where a
+tissue vertex comes within reach of a shape. A thread 0.3 mm thick that lies
+between particle rows 3 mm apart meets no vertex and sinks into the tissue.
+Build the :class:`~newton.CollisionPipeline` with
+``enable_rigid_soft_full_surface_contact=True`` so the faces and edges of the
+tissue surface also collide with the needle and the thread; the gate applies to
+these records through their corner particles.
 
 Example: :doc:`vbd_suture </examples>` sews two elastic cuboids with a half
 circle needle and tightens the thread.

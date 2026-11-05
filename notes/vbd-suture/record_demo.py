@@ -1,3 +1,4 @@
+# ruff: noqa: E402, I001
 """Record the VBD suturing example with a fixed camera (headless, Xvfb) and write stills and metrics.
 
 Usage (from the worktree root, GPU 0):
@@ -14,7 +15,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--output", required=True, help="Output directory for the video, stills and metrics.")
-parser.add_argument("--frames", type=int, default=600)
+parser.add_argument("--frames", type=int, default=720)
 parser.add_argument("--width", type=int, default=1280)
 parser.add_argument("--height", type=int, default=720)
 parser.add_argument("--camera-pos", type=float, nargs=3, default=(0.0, -0.16, 0.085))
@@ -25,16 +26,15 @@ parser.add_argument("--tools", default="/home/horde/Code/AI-Docs/AI-Logs/Newton/
 args = parser.parse_args()
 sys.path.insert(0, args.tools)
 
-import numpy as np  # noqa: E402
-import warp as wp  # noqa: E402
+import warp as wp
 
 wp.config.log_level = wp.LOG_WARNING
 
-import newton  # noqa: E402
-import newton.viewer  # noqa: E402
-from newton.examples.vbd.example_vbd_suture import Example  # noqa: E402
-from newton_capture import Capture  # noqa: E402
-from newton_capture._video import VideoWriter  # noqa: E402
+import newton
+import newton.viewer
+from newton.examples.vbd.example_vbd_suture import Example
+from newton_capture import Capture
+from newton_capture._video import VideoWriter
 
 out = Path(args.output)
 out.mkdir(parents=True, exist_ok=True)
@@ -42,9 +42,32 @@ example_args = Example.create_parser().parse_args(["--viewer", "null", "--num-fr
 example = Example(newton.viewer.ViewerNull(), example_args)
 example._init_faces()
 
+_contacts: list = []
+
+
+def soft_contacts():
+    """Soft contact records in use and the buffer capacity, from the solver-owned contacts object."""
+    if not _contacts:
+        for name in dir(example.solver):
+            obj = getattr(example.solver, name, None)
+            if hasattr(obj, "soft_contact_count") and hasattr(obj, "soft_contact_max"):
+                _contacts.append(obj)
+                break
+    if not _contacts:
+        return None
+    return [int(_contacts[0].soft_contact_count.numpy()[0]), int(_contacts[0].soft_contact_max)]
+
+
 metrics = []
 t0 = time.time()
-with Capture(str(out), width=args.width, height=args.height, camera_pos=tuple(args.camera_pos), camera_target=tuple(args.camera_target), camera_fov=args.camera_fov) as cap:
+with Capture(
+    str(out),
+    width=args.width,
+    height=args.height,
+    camera_pos=tuple(args.camera_pos),
+    camera_target=tuple(args.camera_target),
+    camera_fov=args.camera_fov,
+) as cap:
     viewer = cap._get_viewer(example.model)
     cap._apply_camera(viewer)
     with VideoWriter(str(out / "vbd_suture.mp4"), fps=example.params["fps"]) as writer:
@@ -73,16 +96,18 @@ with Capture(str(out), width=args.width, height=args.height, camera_pos=tuple(ar
                         "points": [len(example.solver.suture_tunnel_points(0, t)[0]) for t in range(tunnels)],
                         "max_residual_mm": example.max_residual * 1e3,
                         "max_penetration_mm": example.max_penetration * 1e3,
+                        "soft_contacts": soft_contacts(),
                     }
                 )
                 print(json.dumps(metrics[-1]))
         video = writer.close()
 elapsed = time.time() - t0
 summary = {"frames": args.frames, "seconds": elapsed, "video": str(video), "final": metrics[-1] if metrics else None}
-try:
-    example.test_final()
-    summary["test_final"] = "pass"
-except AssertionError as exc:
-    summary["test_final"] = f"fail: {exc}"
+for name in ("test_final", "check_final_strict"):
+    try:
+        getattr(example, name)()
+        summary[name] = "pass"
+    except AssertionError as exc:
+        summary[name] = f"fail: {exc}"
 (out / "metrics.json").write_text(json.dumps({"summary": summary, "metrics": metrics}, indent=1))
 print(json.dumps(summary, indent=1))

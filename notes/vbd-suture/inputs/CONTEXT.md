@@ -17,7 +17,7 @@ One sample point of the tunnel, stored as a tet index and four barycentric weigh
 _Avoid_: anchor, tunnel anchor, tunnel node, constraint point, sliding point, fixation point (Newton already uses "anchor" for attachment and contact points)
 
 **Tunnel point row**:
-The constraint of one tunnel point: a bilateral compliant-ALM row in the two directions transverse to the rod tangent, hard (infinite stiffness) by default, with a per-point stiffness value so a soft wall is a parameter change. Decided 2026-11-05.
+The constraint of one tunnel point: a bilateral compliant-ALM row in the two directions transverse to the rod tangent, hard (infinite stiffness) by default, with a per-point stiffness value so a soft wall is a parameter change. Decided 2026-11-05. The stiffness is the per-tissue attribute `vbd.suture_stiffness` (smallest value over the tet's vertices); hard rows fight each other inside one linear tet (I18, 2026-11-05); the demo keeps the hard default, see the open issue I19.
 _Avoid_: anchor row, tunnel constraint, sliding constraint, tube constraint (the deferred unilateral variant)
 
 **Transverse multiplier**:
@@ -69,7 +69,7 @@ The distance from the tunnel polyline (through its tunnel points, plus the segme
 _Avoid_: gate set, tunnel tets
 
 **Needle state**:
-The per-needle device record that drives the tunnel: phase (OUTSIDE, PIERCING, THROUGH), the tet that contains the tip, the current tunnel and its tunnel point count, and the summed tip contact force of the substep. Decided 2026-11-05: the state machine runs on the device only, with one thread per needle for the sequential parts, so a captured substep graph stays valid and no readback is needed; a constructor argument `tunnel_update_interval` sets how many substeps pass between updates (default 1).
+The per-needle device record that drives the tunnel: whether a tunnel is growing (PIERCING) or not (OUTSIDE), the tet that contains the tip, the growing tunnel and its tunnel point count, and the summed tip contact force of the substep; a tunnel that has exited is THROUGH on its own and keeps holding rod while the tip may open the next one. Decided 2026-11-05: the state machine runs on the device only, with one thread per needle for the sequential parts, so a captured substep graph stays valid and no readback is needed; a constructor argument `tunnel_update_interval` sets how many substeps pass between updates (default 1).
 _Avoid_: controller (the SOFA host-side name), puncture manager
 
 **Tunnel point spacing rule**:
@@ -101,7 +101,7 @@ The solver's compliant-ALM contact friction: the tangential force rho_t times th
 _Avoid_: IPC friction (the smooth law of soft contacts), viscous friction, stick-slip state machine
 
 **Tunnel point friction**:
-Capped ALM friction applied to a tunnel point row: one tangent direction instead of a tangent plane, the transverse row force in the role of the normal force, the transverse multiplier in the role of the normal multiplier, and the same rho_t rule (`_contact_auto_tangent_rho`). Decided 2026-11-05: same law, same functions, no separate friction model.
+Capped ALM friction applied to a tunnel point row: one tangent direction instead of a tangent plane, the same rho_t rule (`_contact_auto_tangent_rho`), and a cap `mu * (w * N + g * ds)` where `N` is the previous step's converged transverse multiplier frozen for the step and `w` the constructor argument `suture_friction_transverse_weight`. Decided 2026-11-05: same law and functions; changed during implementation (I13, I14): `w` defaults to 0 (grip only) because a cap that follows the transverse multiplier feeds tissue shear back into itself and drags tissue along a straight needle; `w = 1` is the body-body contact law.
 _Avoid_: anchor friction, tunnel friction model, grip model
 
 ## Relationships
@@ -127,9 +127,9 @@ Out of scope: knot tying, tissue tearing and thread cut-through, a visible hole 
 1. Entry: the puncture places the entry **Tunnel point** on the pierced surface face, inside that face's tet; the **Needle state** becomes PIERCING.
 2. Growth: while PIERCING the tunnel ends at the tip; a new point is appended per the **Tunnel point spacing rule**.
 3. Retraction while PIERCING: if the tip retreats past the last point by more than `ds_tunnel`, that point is removed; the tunnel never extends beyond the tip before the exit.
-4. Exit: when the tet walk crosses a boundary face, the exit point is placed on that face and the state becomes THROUGH; from then on the tunnel is fixed, whatever the needle does.
+4. Exit: when the tet walk crosses a boundary face, the exit point is placed on that face and the tunnel becomes THROUGH; from then on it is fixed, whatever the needle does, and the needle may puncture again at once (changed 2026-11-05 during implementation: one stroke sews several bodies).
 5. Row on and off: a point's row is on from its creation while some part of the needle or thread passes through the point, and off for good once the thread's free end has passed it; each point caches its last closest place on the rod curve and searches locally from there.
-6. Finish: when the last row switches off the state becomes OUTSIDE and the tunnel is finished; a new puncture always opens a new tunnel.
+6. Finish: a THROUGH tunnel is finished when its last row switches off; a new puncture always opens a new tunnel.
 7. Gate: every update, a per-particle kernel recomputes the needle group's gate bit from scratch from the distance to the tunnel polyline and the tip segment.
 
 ## Example dialogue
@@ -143,4 +143,5 @@ Out of scope: knot tying, tissue tearing and thread cut-through, a visible hole 
 
 - "anchor", "tunnel node" and "constraint point" were all used for the same thing, and "anchor" was not understood in discussion. Resolved: **Tunnel point**.
 - The friction cap at zero side load was zero (free sliding). Resolved: the cap adds **Grip force per unit length** times **Tunnel point spacing**; the law and functions stay those of body-body contact.
+- The transverse multiplier in the cap drove a feedback loop in implementation (tissue dragged 30 mm by a straight needle). Resolved 2026-11-05 by Claude, pending Anka's review: weight `w` on that term, default 0; `w = 1` restores the contact law.
 - "path" was used for the tip trajectory, the tunnel and the needle centerline. Resolved: **Tunnel** for the material path, **Rod curve** for the needle-plus-thread centerline.

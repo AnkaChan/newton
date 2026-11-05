@@ -41,7 +41,7 @@ SolverVBD(model, *,                                            # keyword only (s
 )
 ```
 
-Row material comes from the model, not from arguments: the per-point stiffness array is filled with `inf` at creation; the tissue parameters are the per-particle custom attributes `vbd.suture_grip` [N/m], `vbd.suture_mu`, `vbd.suture_puncture_force` [N] and `vbd.suture_puncture_cos` of chapter 3, read at a point as the barycentric average over its tet's vertices. The retention factor is the existing `rigid_avbd_gamma` (`solver_vbd.py:471`), the friction smoothing length the existing `friction_epsilon` times `dt` (`rigid_vbd_kernels.py:2052`).
+Row material comes from the model, not from arguments: the per-point stiffness array is filled at creation with the smallest `vbd.suture_stiffness` of the tet's four vertices (default `inf`, the hard row; I18); the other tissue parameters are the per-particle custom attributes `vbd.suture_grip` [N/m], `vbd.suture_mu`, `vbd.suture_puncture_force` [N] and `vbd.suture_puncture_cos` of chapter 3, read at a point as the barycentric average over its tet's vertices. The retention factor is the existing `rigid_avbd_gamma` (`solver_vbd.py:471`), the friction smoothing length the existing `friction_epsilon` times `dt` (`rigid_vbd_kernels.py:2052`).
 
 Not arguments: `rho` and `rho_t` (automatic from the supports, as every compliant row), the tangent (from the rod segment), the gate masks (chapter 2), the point capacities (authored per needle, chapter 3).
 
@@ -356,7 +356,7 @@ The host pattern for the builder method is `add_attachment_particle_body` (`buil
 | Rod curve | none | `suture_segment_*` arrays, one segment per body, tip first |
 | Thread | `add_rod` capsule chain (`builder.py:10481`) | unchanged; its bodies are listed in `add_suture_needle` |
 | Gate masks | none | `shape_contact_gate` set by the builder; `particle_contact_gate` owned by the solver update (chapter 2) |
-| Tissue parameters | none | per-particle custom attributes `vbd.suture_grip`, `vbd.suture_mu`, `vbd.suture_puncture_force`, `vbd.suture_puncture_cos` with defaults 1.0, 0.3, 0.5, 0.5 |
+| Tissue parameters | none | per-particle custom attributes `vbd.suture_grip`, `vbd.suture_mu`, `vbd.suture_puncture_force`, `vbd.suture_puncture_cos`, `vbd.suture_stiffness` with defaults 1.0, 0.3, 0.5, 0.5, inf |
 | Example | none | `newton/examples/vbd/example_vbd_suture.py` with test mode checks |
 
 ### 3.3 Argument list
@@ -403,6 +403,7 @@ No new Python type. The centerline is a sequence of `Vec3` like `Rod.points` (`r
 | `vbd.suture_mu` | float32 `[P]` | tunnel friction coefficient, default 0.3 |
 | `vbd.suture_puncture_force` | float32 `[P]` | puncture force [N], default 0.5 |
 | `vbd.suture_puncture_cos` | float32 `[P]` | cosine of the puncture angle, default 0.5 (60 degrees) |
+| `vbd.suture_stiffness` | float32 `[P]` | tunnel row stiffness [N/m], default inf (hard row); a point takes the smallest value of its tet's vertices (I18) |
 
 Conventions reused: a kinematic body is a body with zero inverse mass whose pose the scene writes (`rigid_vbd_kernels.py:4103-4106`); joints to the needle filter collisions between parent and child shapes by default (`builder.py:6978`); `ModelBuilder.color()` colors bodies by joint connectivity, so the needle, the holder and the thread get body colors without change (`builder.py:13124`); custom attributes in the `vbd` namespace follow `register_custom_attributes` (`solver_vbd.py:2557-2566`).
 

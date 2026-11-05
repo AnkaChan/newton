@@ -858,7 +858,7 @@ add_example_test(
     TestClothExamples,
     name="vbd.example_vbd_suture",
     devices=cuda_test_devices,
-    test_options={"num-frames": 600},
+    test_options={"num-frames": 720},
     use_viewer=True,
 )
 add_example_test(
