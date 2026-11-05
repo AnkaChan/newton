@@ -383,8 +383,9 @@ def evaluate_suture_row(
 ):
     """Force on the rod, its 3x3 Hessian and the rod place, for one tunnel point row.
 
-    The transverse part is the hard attachment row projected onto the normal plane of the rod
-    tangent (``_material_force_terms`` with infinite stiffness gives ``k_eff = rho``). The
+    The transverse part is the attachment row projected onto the normal plane of the rod tangent
+    (``_material_force_terms``: the default infinite stiffness gives ``k_eff = rho``, a finite
+    ``vbd.suture_stiffness`` gives the compliant law). The
     tangential part is the capped ALM friction of body-body contact in one dimension: the force
     ``rho_t * slip + lambda_t`` is clamped to ``mu * (cap_normal + grip * ds)``, with ``cap_normal`` the
     previous step's converged transverse multiplier frozen for the step, and the Hessian is
@@ -631,11 +632,21 @@ def _segment_distance_sq(x: wp.vec3, a: wp.vec3, b: wp.vec3) -> float:
 
 
 @wp.func
+def _tet_min_attribute(tet: int, tet_indices: wp.array2d[wp.int32], values: wp.array[wp.float32]) -> float:
+    """Smallest per-particle value over the four vertices of ``tet``."""
+    v = values[tet_indices[tet, 0]]
+    for k in range(1, 4):
+        v = wp.min(v, values[tet_indices[tet, k]])
+    return v
+
+
+@wp.func
 def _append_suture_point(
     slot: int,
     tet: int,
     bary: wp.vec4,
     spacing: float,
+    stiffness: float,
     max_points: int,
     points: SuturePointData,
     tunnel_point_count: wp.array[wp.int32],
@@ -660,7 +671,7 @@ def _append_suture_point(
     points.rho[i] = 0.0
     points.rho_t[i] = 0.0
     points.ds[i] = spacing
-    points.stiffness[i] = wp.inf
+    points.stiffness[i] = stiffness
     points.cap_normal[i] = 0.0
     tunnel_point_count[slot] = count + 1
     return count + 1
@@ -771,6 +782,7 @@ def update_suture_needle_state(
     body_q: wp.array[wp.transform],
     puncture_force: wp.array[wp.float32],
     puncture_cos: wp.array[wp.float32],
+    row_stiffness: wp.array[wp.float32],
     soft_contact_indices: wp.array[wp.vec3i],
     soft_contact_normal: wp.array[wp.vec3],
     needle_max_tunnels: wp.array[wp.int32],
@@ -843,6 +855,7 @@ def update_suture_needle_state(
                     best_tet,
                     _bary_clamp(best_bary),
                     spacing,
+                    _tet_min_attribute(best_tet, tet_indices, row_stiffness),
                     needle_max_points[n],
                     points,
                     tunnel_point_count,
@@ -872,6 +885,7 @@ def update_suture_needle_state(
                         tet,
                         _bary_clamp(bary),
                         spacing,
+                        _tet_min_attribute(tet, tet_indices, row_stiffness),
                         needle_max_points[n],
                         points,
                         tunnel_point_count,
@@ -901,6 +915,7 @@ def update_suture_needle_state(
                         tet,
                         _bary_clamp(bary),
                         spacing,
+                        _tet_min_attribute(tet, tet_indices, row_stiffness),
                         needle_max_points[n],
                         points,
                         tunnel_point_count,

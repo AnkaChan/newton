@@ -146,6 +146,7 @@ _SUTURE_PARTICLE_ATTRIBUTES = (
     ("suture_mu", 0.3),
     ("suture_puncture_force", 0.5),
     ("suture_puncture_cos", 0.5),
+    ("suture_stiffness", float("inf")),
 )
 
 # The six edges of a tet as local vertex pairs, for the mean edge length of the spacing rule.
@@ -2605,10 +2606,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             stiffness and damping must be finite and non-negative.
           - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
-          - ``vbd:suture_grip``, ``vbd:suture_mu``, ``vbd:suture_puncture_force`` and
-            ``vbd:suture_puncture_cos`` per particle for the suturing feature (tissue grip force per
-            unit tunnel length [N/m], tunnel friction coefficient, puncture force [N], cosine of the
-            puncture angle); defaults 1.0, 0.3, 0.5 and 0.5.
+          - ``vbd:suture_grip``, ``vbd:suture_mu``, ``vbd:suture_puncture_force``,
+            ``vbd:suture_puncture_cos`` and ``vbd:suture_stiffness`` per particle for the suturing
+            feature (tissue grip force per unit tunnel length [N/m], tunnel friction coefficient,
+            puncture force [N], cosine of the puncture angle, tunnel row stiffness [N/m]); defaults
+            1.0, 0.3, 0.5, 0.5 and infinity (a hard row). A tunnel point takes the smallest
+            stiffness of its tet's four vertices.
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes. The Dahl and ``joint_is_hard`` attributes are authored in USD as
@@ -3576,6 +3579,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._suture_mu = vbd_attrs.suture_mu
         self._suture_puncture_force = vbd_attrs.suture_puncture_force
         self._suture_puncture_cos = vbd_attrs.suture_puncture_cos
+        self._suture_stiffness = vbd_attrs.suture_stiffness
 
         rod = SutureRodData()
         rod.segment_body = model.suture_segment_body
@@ -3695,12 +3699,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         *,
         state: State,
         ds: float | None = None,
+        stiffness: float | None = None,
     ) -> None:
         """Write tunnel points of one tunnel directly and refresh their rod places (tests and tools).
 
         The tunnel becomes a fixed (through) tunnel with every point active, so its rows act while
         the needle state machine leaves it alone. ``ds`` is the tunnel length each point represents;
-        ``None`` uses the resolved point spacing.
+        ``None`` uses the resolved point spacing. ``stiffness`` is the row stiffness of every point
+        [N/m]; ``None`` takes the smallest ``vbd.suture_stiffness`` of each point's tet.
         """
         if self.suture_needle_count == 0:
             raise ValueError("The model has no suture needle")
@@ -3726,7 +3732,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         _write(self._suture_point_lambda, [np.zeros(3, dtype=np.float32)] * count, np.float32)
         _write(self._suture_point_lambda_t, [0.0] * count, np.float32)
         _write(self._suture_point_ds, [spacing] * count, np.float32)
-        _write(self._suture_point_stiffness, [np.inf] * count, np.float32)
+        if stiffness is None:
+            attribute = self._suture_stiffness.numpy()
+            tet_vertices = self.model.tet_indices.numpy().reshape(-1, 4)
+            row_stiffness = [float(attribute[tet_vertices[t]].min()) for t in tets]
+        else:
+            row_stiffness = [float(stiffness)] * count
+        _write(self._suture_point_stiffness, row_stiffness, np.float32)
         _write(self._suture_point_cap_normal, [0.0] * count, np.float32)
 
         tunnel_index = needle * self._suture_tunnel_capacity + tunnel
@@ -3792,6 +3804,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 state.body_q,
                 self._suture_puncture_force,
                 self._suture_puncture_cos,
+                self._suture_stiffness,
                 contacts.soft_contact_indices if contacts is not None else self._suture_empty_indices,
                 contacts.soft_contact_normal if contacts is not None else self._suture_empty_normals,
                 model.suture_needle_max_tunnels,

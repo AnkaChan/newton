@@ -30,7 +30,9 @@ def _tet_points():
     ]
 
 
-def _scene(device, *, tet_fixed, rod_dynamic, rod_axis_x=0.0, grip=1.0, mu=0.3, ds=1.0e-3, point_spacing=1.0e-3):
+def _scene(
+    device, *, tet_fixed, rod_dynamic, rod_axis_x=0.0, grip=1.0, mu=0.3, ds=1.0e-3, point_spacing=1.0e-3, stiffness=None
+):
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     SolverVBD.register_custom_attributes(builder)
     mass = 0.0 if tet_fixed else 1.0e-3
@@ -47,6 +49,8 @@ def _scene(device, *, tet_fixed, rod_dynamic, rod_axis_x=0.0, grip=1.0, mu=0.3, 
     model = builder.finalize(skip_validation_inertia=True)
     model.vbd.suture_grip.fill_(grip)
     model.vbd.suture_mu.fill_(mu)
+    if stiffness is not None:
+        model.vbd.suture_stiffness.fill_(stiffness)
     solver = SolverVBD(model, iterations=10, suture_point_spacing=point_spacing)
     state_0 = model.state()
     state_1 = model.state()
@@ -117,6 +121,17 @@ def test_transverse_multiplier_equals_side_load(test, device):
         np.testing.assert_allclose(np.linalg.norm(lam), 1.0e-3, rtol=0.05)
 
 
+def test_finite_stiffness_row_is_compliant(test, device):
+    """With vbd.suture_stiffness = k the row carries the side load F at an offset F / k."""
+    with wp.ScopedDevice(device):
+        model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True, stiffness=10.0)
+        test.assertEqual(float(solver._suture_point_stiffness.numpy()[0]), 10.0)
+        state = _run(solver, s0, s1, control, steps=200, body_force=(1.0e-3, 0.0, 0.0), body=rod)
+        np.testing.assert_allclose(_point_axis_distance(model, state, solver, rod), 1.0e-3 / 10.0, rtol=0.1)
+        lam = solver._suture_point_lambda.numpy()[0]
+        np.testing.assert_allclose(np.linalg.norm(lam), 1.0e-3, rtol=0.05)
+
+
 devices = get_test_devices()
 
 
@@ -144,6 +159,12 @@ add_function_test(
     TestSutureRow,
     "test_transverse_multiplier_equals_side_load",
     test_transverse_multiplier_equals_side_load,
+    devices=devices,
+)
+add_function_test(
+    TestSutureRow,
+    "test_finite_stiffness_row_is_compliant",
+    test_finite_stiffness_row_is_compliant,
     devices=devices,
 )
 
