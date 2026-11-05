@@ -177,6 +177,8 @@ The `alm_dat` path uses the same three helpers, but stores one plane per slot. `
 
 ### 2.2 Old and new
 
+Inherited from the rigid-soft DAT (#4180) and called directly: `find_vertex_triangle_separator`, `find_edge_edge_separator` (certified separator search, candidate axes, both signs, whole primitives), `dat_separation_epsilon` (scale-aware separation band) and `planar_truncation_t` (segment-plane fraction with the wrong-side-start rule) (`particle_dat_kernels.py:23-28`). Own to this path: the stored planes, `dat_plane_offset`, the budget-sphere commit and the ALM row. Not adopted from #4936 on main: `find_primitive_pair_separator` (a rigid-soft dispatch over padded VT/TV/EE indices; the soft path dispatches by slot family), the freeze-with-diagnostic policy and the Eq. (14) edge region (forks below).
+
 | | `penalty_dat` today | `alm_dat` |
 |---|---|---|
 | Plane lifetime | one truncation call | from one truncation to the next; cleared only by a detection (`solver_vbd.py:3444-3445`) |
@@ -287,15 +289,17 @@ All names exist today: `_build_contact_planes_kernel` `particle_dat_kernels.py:2
 |---|---|---|---|
 | Normal refresh cadence | `refresh_normals` of `build_contact_planes`, always True from the solver | refresh at every commit (today): normals follow the closest-point direction at the anchor; keep normals within a step and slide offsets only, as Anka's reference keeps them between `NORMAL_UPDATE_INTERVAL` rounds (`inputs/algorithm-reference.md`) | none |
 | Plane margin | `margin` of `build_contact_planes`, solver passes 0 | 0: the certificate is "no crossing", the row's hard gap keeps loads off the plane; the cloth thickness: planes keep surfaces apart on their own | none |
-| Failed separator at the anchor | none | keep the stored plane (today); or invalidate the slot | none |
-| Plane offset rule | none | balanced slowest-vertex fractions (today, the DAT proportional split generalized); midpoint always | none |
+| Failed separator at the anchor | none | keep the stored plane (today); or invalidate the slot; or freeze the pair with a diagnostic, as the rigid-soft DAT does on main (`apply_rigid_soft_truncation` in `rigid_vbd_kernels.py`, #4936) | none |
+| Plane offset rule | none | balanced slowest-vertex fractions (today, the DAT proportional split generalized, `dat_plane_offset`); the shared rigid-soft helper `place_dat_division_plane` of `rigid_vbd_kernels.py` (#4180): proportional split by the two primitives' largest approach, 5 % clearance floor per side; midpoint always | none |
 | Edge-edge direction | none | canonical `e1 < e2` only (today); both directions with a shared plane | none |
+| Edge-edge row geometry | none | closest points of the two edges (today, `_edge_edge_row_geometry`); the wireframe edge region of Offset Geometric Contact, Eq. (14), as #4936 applies to rigid-soft EE forces on main | none |
 
 ### 2.8 Open questions for the reviewer
 
 1. Is the always-on normal refresh the intended behaviour, or should the solver keep the normals between the final rounds as the reference pseudocode does (fork "Normal refresh cadence")?
 2. Should the planes carry the cloth thickness as their margin, now that the row has its own hard gap (fork "Plane margin")?
-3. When a stored plane cannot be re-certified at the anchor, is keeping it the right rule, given that the anchor never crossed it (fork "Failed separator")?
+3. When a stored plane cannot be re-certified at the anchor, is keeping it the right rule, given that the anchor never crossed it, or should the pair freeze with a diagnostic as the rigid-soft DAT does (fork "Failed separator")?
+4. Should the soft planes use the shared `place_dat_division_plane` instead of the maximin `dat_plane_offset`, and should the EE row take the Eq. (14) edge region (forks "Plane offset rule", "Edge-edge row geometry")?
 
 ## 3. The ALM contact row, its multipliers and their history
 
