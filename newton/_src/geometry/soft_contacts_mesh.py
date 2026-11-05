@@ -1544,6 +1544,10 @@ class _SoftContactFilterData:
     edge_spans: wp.array[wp.vec3i]
     neighbors: wp.array[int]
     soft_adjacency: MeshAdjacencyData
+    # Suture contact gate: a record whose soft corner and shape share a bit produces no force,
+    # no dual update and no DAT plane. Both arrays stay null when the model has no suture needle.
+    particle_contact_gate: wp.array[wp.int32]
+    shape_contact_gate: wp.array[wp.int32]
 
 
 def _make_soft_contact_filter_data(
@@ -1554,6 +1558,14 @@ def _make_soft_contact_filter_data(
 ) -> _SoftContactFilterData:
     """Bind existing arrays to an evaluation; allocate no device storage or position snapshots."""
     result = _SoftContactFilterData()
+    if getattr(model, "suture_needle_count", 0) > 0:
+        # The gate reads the record's corners and shape even for analytic rows.
+        result.contact_count = contacts.soft_contact_count
+        result.contact_max = contacts.soft_contact_max
+        result.contact_shapes = contacts.soft_contact_shape
+        result.soft_contact_indices = contacts.soft_contact_indices
+        result.particle_contact_gate = model.particle_contact_gate
+        result.shape_contact_gate = model.shape_contact_gate
     data = contacts._soft_contact_mesh_data
     if data is None:
         if contacts._soft_contact_mesh_features is not None:
@@ -1597,6 +1609,16 @@ def _soft_contact_force_enabled(contact_index: int, data: _SoftContactFilterData
     selection, but a mesh row still needs a resolved sign and at least one ACTIVE particle. Zero
     inverse mass does not make an ACTIVE particle ineligible for contact forces.
     """
+    if data.particle_contact_gate:
+        # Suture contact gate (ADR 0002): detected and stored, but ignored by every consumer.
+        if contact_index >= wp.min(data.contact_count[0], data.contact_max):
+            return False
+        shape_bits = data.shape_contact_gate[data.contact_shapes[contact_index]]
+        if shape_bits != 0:
+            gate_corners = data.soft_contact_indices[contact_index]
+            for k in range(3):
+                if gate_corners[k] >= 0 and (data.particle_contact_gate[gate_corners[k]] & shape_bits) != 0:
+                    return False
     if not data.features:
         return True
     count = wp.min(data.contact_count[0], data.contact_max)

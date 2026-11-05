@@ -8764,6 +8764,8 @@ def _run_vt_dat_row(
             wp.array([stored_normal], dtype=wp.vec3, device=device),
             wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device),
             wp.array([[0, 1, 2]], dtype=wp.vec3i, device=device),
+            wp.zeros(3, dtype=wp.int32, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
             wp.array([0 if moving_body else -1], dtype=wp.int32, device=device),
             wp.array(
                 [wp.transform_identity() if moving_body else origin_transform],
@@ -8825,6 +8827,8 @@ def test_bvh_dat_uses_geometric_separator_for_back_facing_ee(test, device):
                 wp.array([force_normal], dtype=wp.vec3, device=device),
                 wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3, device=device),
                 wp.array([[0, 1, -1]], dtype=wp.vec3i, device=device),
+                wp.zeros(2, dtype=wp.int32, device=device),
+                wp.zeros(1, dtype=wp.int32, device=device),
                 wp.array([-1], dtype=wp.int32, device=device),
                 wp.array([wp.transform_identity()], dtype=wp.transform, device=device),
                 wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3, device=device),
