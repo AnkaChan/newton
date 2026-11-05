@@ -18,7 +18,7 @@ The `alm_dat` path keeps the detection reference and the displacement bookkeepin
 
 | | `penalty_dat` today | `alm_dat` |
 |---|---|---|
-| Soft self-contact schedule | default `PRE_POST_INIT`, two detections per substep (`solver_vbd.py:4814-4816`) | default `PRE_INIT`; `PRE_POST_INIT` allowed (D3, to implement): the second detection runs at the certified anchor after the inertial commit and re-initializes `x_start`, the planes, the matched multipliers and the budget, so the admissible motion per substep doubles at the same record count. Today the code forces `PRE_INIT` (`solver_vbd.py:4810-4813`, check `solver_vbd.py:4932-4935`); nothing in the scheme requires it |
+| Soft self-contact schedule | default `PRE_POST_INIT`, two detections per substep (`solver_vbd.py:4814-4816`) | the same host default (D3, implemented 2026-11-05 on `ankac/alm-dat-main`, `_alm_dat_redetect`): the second detection runs at the certified anchor after the inertial commit and re-initializes `x_start`, the planes, the matched multipliers and the budget, so the admissible motion per substep doubles at the same record count; `PRE_INIT` detects once, `ITERATIONS` is refused. The reviewed revision still forces `PRE_INIT` (`solver_vbd.py:4810-4813`, check `solver_vbd.py:4932-4935`) |
 | What is truncated | the iterate, after the inertial step and after every colour (`solver_vbd.py:3385-3386`, `solver_vbd.py:4207-4208`) | the anchor only; the trial is free (`solver_vbd.py:3383-3384`, `solver_vbd.py:4205-4206`) |
 | Truncation cadence | every colour, because the contact forces read the iterate | the anchor is truncated toward the trial after the inertial step and after every sweep (`particle_dat_plane_update_interval = 1`; stage 1 of `inputs/algorithm-reference.md`, `PLANE_UPDATE_INTERVAL`), not after every colour, because the rows read the trial. After the last sweep, `particle_dat_truncation_iterations` rounds of truncate, re-place the planes at the new anchor, truncate again let the anchor approach the final trial further than one truncation allows (stage 2 of the reference, `FIXED_TRUNCATION_ITERATIONS`; `solver_vbd.py:3457`, `solver_vbd.py:4232-4235`, `solver_vbd.py:4734-4735`) |
 | Division planes | recomputed per pair from the current positions inside the truncation kernel (`particle_vbd_kernels.py:1988`), not stored | one stored plane per slot, built at the anchor, re-placed at every truncation (`particle_dat_kernels.py:182-197`, chapter 2) |
@@ -101,9 +101,8 @@ step(state_in, state_out, control, contacts, dt):                        # solve
     _validate_dat_collision_schedules()               # alm_dat: the SOFT_SELF_CONTACT slot must be PRE_INIT
     _pre_initialization_detection(state_in, dt)       # detect vt and ee rows within margin + gap; x_start = particle_q; displacement = 0
     _initialize_particles(state_in, state_out, contacts, dt)
-    if soft_self_contact_schedule == PRE_POST_INIT:                       # D3, allowed, not implemented yet
-        _post_initialization_detection(anchor) (new)                      # detect at the certified anchor, which is penetration-free
-        _alm_dat_reinitialize(state_in) (new)                             # x_start = anchor; displacement = trial - x_start; planes rebuilt; multipliers matched; budget restarts
+    if soft_self_contact_schedule == PRE_POST_INIT:                       # D3, implemented on ankac/alm-dat-main as _alm_dat_redetect
+        _alm_dat_redetect(state_in, state_out, contacts, dt)              # trial kept aside; detection at the anchor; x_start = anchor; displacement = trial - x_start; planes rebuilt; multipliers matched; budget restarts
     for k in range(iterations):
         _solve_particle_iteration(state_in, state_out, contacts, dt)
     _finalize_particles(state_out, dt)
@@ -152,7 +151,7 @@ All names exist today: `step` `solver_vbd.py:2677-2753`, `_initialize_particles`
 
 | Fork | Switch | Options | Ablation entry |
 |---|---|---|---|
-| Detections per substep, closed 2026-11-05 (D3) | the `SOFT_SELF_CONTACT` slot schedule, `PRE_INIT` default | one detection: speed cap `0.5 gamma (margin + gap) / dt`; two detections (`PRE_POST_INIT`): the second at the certified anchor after the inertial commit, re-initializing `x_start`, planes, matched multipliers and budget: twice the cap at the same record count. Decided: allow both, do not force one (to implement) | collision-fidelity benchmark: the cloth recipes lose the grasp at the lift under one detection; the 3 mm gap ablation restores it at 2 to 19 times the record demand |
+| Detections per substep, closed 2026-11-05 (D3) | the `SOFT_SELF_CONTACT` slot schedule, `PRE_POST_INIT` default as in the host | one detection: speed cap `0.5 gamma (margin + gap) / dt`; two detections (`PRE_POST_INIT`): the second at the certified anchor after the inertial commit, re-initializing `x_start`, planes, matched multipliers and budget: twice the cap at the same record count. Implemented 2026-11-05 (`ankac/alm-dat-main`): the free-flight test admits 1.0 budget per step with one detection and 1.5 with two; the second detection costs about 1 % of a substep on the towel, the 3 mm gap 2 % plus 14 to 19 times the records | collision-fidelity benchmark: the cloth recipes lose the grasp at the lift under one detection; the 3 mm gap ablation restores it at 2 to 19 times the record demand |
 | Budget rule, closed 2026-11-05 (D1) | none; `particle_dat_budget_rule` removed | the end-point clamp of the penalty DAT path is the only rule. The removed rule, called `path_length`, required `|offset| + |step| <= budget` at each commit: the triangle-inequality bound on the end point, strictly tighter than the sphere with nothing in return. It froze a vertex at the cap even for a step back (lock-in) and cut every non-radial step short. The end-point distance alone guarantees that an undetected pair cannot close | collision-fidelity benchmark run of 2026-11-04 (`notes/collision-benchmark-alm-dat` on the review worktree): columns `alm_dat` (path length) and `alm_dat_distance` (end point) |
 | Budget scope | none | every vertex (today, `particle_dat_kernels.py:549-575` launches over `P`); or only vertices with a stored plane | none |
 | Rigid-soft DAT with `alm_dat` | none; refused (`solver_vbd.py:995-998`) | off: rigid-soft contact is penalty only; on: would need rigid-soft planes in the final truncation | none |
@@ -164,7 +163,7 @@ All names exist today: `step` `solver_vbd.py:2677-2753`, `_initialize_particles`
 
 1. Closed 2026-11-05 (D1): the end-point clamp is the only budget rule; the switch is removed.
 2. Should the budget apply only to vertices that own a stored plane, or to every vertex as today (fork "Budget scope")? The second keeps the certificate for pairs that enter the reach during the step.
-3. Closed 2026-11-05 (D3): both schedules are allowed, `PRE_INIT` stays the default, the second detection runs at the certified anchor after the inertial commit.
+3. Closed 2026-11-05 (D3): both schedules are allowed, `PRE_POST_INIT` is the default as in the host, the second detection runs at the certified anchor after the inertial commit. Implemented on `ankac/alm-dat-main`.
 4. Should coverage loss (`_dat_coverage == 0`) stay a flag, or should the step grow the storage and re-detect on its own outside capture (fork "Storage growth")?
 
 ## 2. Plane placement and truncation
