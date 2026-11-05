@@ -22,7 +22,7 @@ The `alm_dat` path keeps the detection reference and the displacement bookkeepin
 | What is truncated | the iterate, after the inertial step and after every colour (`solver_vbd.py:3385-3386`, `solver_vbd.py:4207-4208`) | the anchor only; the trial is free (`solver_vbd.py:3383-3384`, `solver_vbd.py:4205-4206`) |
 | Truncation cadence | every colour | after the inertial step, every `particle_dat_plane_update_interval` sweeps, and `particle_dat_truncation_iterations` final rounds (`solver_vbd.py:3457`, `solver_vbd.py:4232-4235`, `solver_vbd.py:4734-4735`) |
 | Division planes | recomputed per pair from the current positions inside the truncation kernel (`particle_vbd_kernels.py:1988`), not stored | one stored plane per slot, built at the anchor, re-placed at every truncation (`particle_dat_kernels.py:182-197`, chapter 2) |
-| Motion budget | magnitude clamp of the accumulated displacement at every truncation (`particle_vbd_kernels.py:2133-2136`) | applied once per commit on the anchor's displacement from `x_start`; path-length or distance rule (`particle_dat_kernels.py:517-546`) |
+| Motion budget | magnitude clamp of the accumulated displacement at every truncation (`particle_vbd_kernels.py:2133-2136`) | the same clamp, applied at each commit to the anchor's displacement from `x_start`: the end point stays within the budget sphere (`budget_sphere_fraction`, `particle_dat_kernels.py:493-514`). The path-length accounting of the first revision (`particle_dat_kernels.py:541-545`) was removed on 2026-11-05 (D1) |
 | Contact force | penalty of the witness gap (`particle_vbd_kernels.py:1593`) | compliant ALM row with slack, hard wall, damping and Coulomb friction, read at the trial (chapter 3) |
 | Contact memory | none | one normal and one tangential multiplier per slot, matched across steps through sorted rows (`particle_dat_kernels.py:757-779`) |
 | Committed state | the truncated iterate | the anchor (`solver_vbd.py:4736`) |
@@ -42,7 +42,7 @@ SolverVBD(model, *,                                       # keyword only (solver
     particle_self_contact_method: str = "penalty_dat",    # "alm_dat" selects this path (solver_vbd.py:346)
     particle_dat_plane_update_interval: int = 1,          # truncate and rebuild every this many sweeps; 0 = never mid-step (solver_vbd.py:347)
     particle_dat_truncation_iterations: int = 2,          # final truncation rounds; at least 1 (solver_vbd.py:348, 1026-1030)
-    particle_dat_budget_rule: str = "path_length",        # or "distance" (solver_vbd.py:349, 1031-1035)
+                                                          # particle_dat_budget_rule (solver_vbd.py:349) removed 2026-11-05 (D1): one rule, the end-point clamp
     particle_contact_alm_rho_scale: float = 1.0,          # multiplies the inertia metric rho (solver_vbd.py:350)
     particle_contact_alm_rho_floor_ratio: float = 1.0,    # rho >= ratio x soft_contact_ke; 0 = no floor (solver_vbd.py:351)
     particle_contact_alm_hard_gap: float | None = None,   # wall height above the plane [m]; None = 0.25 x margin (solver_vbd.py:1011-1012)
@@ -138,7 +138,7 @@ _finalize_particles(state_out, dt):                                       # solv
 
 _alm_dat_truncate(trial, refresh_normals):                                # solver_vbd.py:3403
     sigma = truncate_against_contact_planes(anchor, trial, planes, gamma)           # chapter 2
-    anchor = commit_truncated_displacement(x_start, anchor, trial, sigma, budget, rule)
+    anchor = commit_truncated_displacement(x_start, anchor, trial, sigma, budget)      # end point within the budget of x_start
     build_contact_planes(anchor, trial, refresh_normals)                              # planes at the new anchor
 ```
 
@@ -149,7 +149,7 @@ All names exist today: `step` `solver_vbd.py:2677-2753`, `_initialize_particles`
 | Fork | Switch | Options | Ablation entry |
 |---|---|---|---|
 | Detections per substep | none; `alm_dat` forces one (`solver_vbd.py:4810-4813`) | one detection: planes certified for the whole substep, speed cap `0.5 gamma (margin + gap) / dt`; two detections as in `penalty_dat`: twice the cap, but the stored planes would need a second certified anchor | free-fall and drop cases of the collision-fidelity benchmark |
-| Budget rule | `particle_dat_budget_rule` | `path_length`: distance travelled plus step within the budget, a vertex at the cap freezes; `distance`: end point within the budget sphere, steps back are admitted | collision-fidelity benchmark run of 2026-11-04 (`notes/collision-benchmark-alm-dat` on the review worktree) |
+| Budget rule, closed 2026-11-05 (D1) | none; `particle_dat_budget_rule` removed | the end-point clamp of the penalty DAT path is the only rule. The path-length accounting was wrong: it froze vertices that had spent their budget (lock-in) and needed the travelled length as extra state, while the end-point distance alone guarantees that an undetected pair cannot close | collision-fidelity benchmark run of 2026-11-04 (`notes/collision-benchmark-alm-dat` on the review worktree): columns `alm_dat` (path length) and `alm_dat_distance` (end point) |
 | Budget scope | none | every vertex (today, `particle_dat_kernels.py:549-575` launches over `P`); or only vertices with a stored plane | none |
 | Rigid-soft DAT with `alm_dat` | none; refused (`solver_vbd.py:995-998`) | off: rigid-soft contact is penalty only; on: would need rigid-soft planes in the final truncation | none |
 | Plane update cadence | `particle_dat_plane_update_interval` | 1: anchor follows every sweep; larger: cheaper, planes staler; 0: final rounds only | none |
@@ -158,7 +158,7 @@ All names exist today: `step` `solver_vbd.py:2677-2753`, `_initialize_particles`
 
 ### 1.8 Open questions for the reviewer
 
-1. Should `distance` become the default budget rule, or stay an option until the benchmark run is read (fork "Budget rule")?
+1. Closed 2026-11-05 (D1): the end-point clamp is the only budget rule; the switch is removed.
 2. Should the budget apply only to vertices that own a stored plane, or to every vertex as today (fork "Budget scope")? The second keeps the certificate for pairs that enter the reach during the step.
 3. Is one detection per substep the intended final design, or should the path support a second certified anchor after the inertial step (fork "Detections per substep")?
 4. Should coverage loss (`_dat_coverage == 0`) stay a flag, or should the step grow the storage and re-detect on its own outside capture (fork "Storage growth")?
@@ -181,7 +181,7 @@ The `alm_dat` path uses the same three helpers, but stores one plane per slot. `
 | Thickness margin per side | the separation band | `max(margin, eps)` capped at half the current gap; the solver passes `margin = 0` (`particle_dat_kernels.py:103`, `solver_vbd.py:1037`) |
 | Edge-edge records | both stored directions truncate | canonical direction `e1 < e2` only; the mirror slot is marked invalid (`particle_dat_kernels.py:266`, `particle_dat_kernels.py:313-314`) |
 | Failed separator | pair skipped | a stored plane is kept, a slot without one stays unconstrained (`particle_dat_kernels.py:290-292`) |
-| Budget | clamp of the accumulated displacement length (`particle_vbd_kernels.py:2133-2136`) | on the anchor's offset from `x_start` at the commit, path-length or distance rule (`particle_dat_kernels.py:493-546`) |
+| Budget | clamp of the accumulated displacement length (`particle_vbd_kernels.py:2133-2136`) | the same clamp on the anchor's offset from `x_start` at the commit: end point within the budget sphere (`particle_dat_kernels.py:493-514`); the path-length variant (`particle_dat_kernels.py:541-545`) removed 2026-11-05 (D1) |
 
 ### 2.3 Argument list
 
@@ -199,8 +199,7 @@ truncate_against_contact_planes(model, anchor, trial, collision_info_array, plan
 commit_truncated_displacement(x_start, anchor, trial, sigma, *,              # particle_dat_kernels.py:549
     budget: float,                # 0.5 gamma (margin + gap) [m] (solver_vbd.py:3388-3390)
     anchor_out: wp.array[wp.vec3],  # [P]; the solver passes the anchor itself (solver_vbd.py:3422)
-    distance_rule: bool = False,  # True selects the distance rule (solver_vbd.py:3423)
-)
+)                                 # distance_rule (solver_vbd.py:3423) removed 2026-11-05 (D1)
 ```
 
 The solver calls the three in this order inside `_alm_dat_truncate`, always with `refresh_normals = True` (`solver_vbd.py:3403-3434`, `solver_vbd.py:3457`, `solver_vbd.py:4235`, `solver_vbd.py:4735`). Not arguments: the separation band per pair, `dat_separation_epsilon` of the largest coordinate of the four points (`particle_dat_kernels.py:223-230`, `particle_dat_kernels.py:275`, `particle_dat_kernels.py:330`).
@@ -269,14 +268,11 @@ _truncate_against_contact_planes_kernel(anchor, trial, planes, gamma, sigma):   
         for v in negative side of the slot:
             sigma[v] = min(sigma[v], planar_truncation_t(anchor[v], trial[v] - anchor[v], -n, p, gamma, m))   # atomic
 
-_commit_truncated_displacement_kernel(x_start, anchor, trial, sigma, budget, rule):   # particle_dat_kernels.py:517; one thread per vertex
+_commit_truncated_displacement_kernel(x_start, anchor, trial, sigma, budget):   # particle_dat_kernels.py:517; one thread per vertex
     step = sigma * (trial - anchor)
     offset = anchor - x_start
-    if rule == distance:
-        step = step * budget_sphere_fraction(offset, step, budget)      # end point inside the budget sphere
-    elif |offset| + |step| > budget:
-        step = step * max(budget - |offset|, 0) / |step|                # path length
-    anchor_out = anchor + step
+    step = step * budget_sphere_fraction(offset, step, budget)          # end point inside the budget sphere; a step back inside is whole
+    anchor_out = anchor + step                                           # (the path-length branch of the first revision was removed, D1)
 ```
 
 All names exist today: `_build_contact_planes_kernel` `particle_dat_kernels.py:233-366`, `dat_plane_offset` `particle_dat_kernels.py:66-179`, `_dat_plane_room` `particle_dat_kernels.py:36-63`, `_truncate_against_contact_planes_kernel` `particle_dat_kernels.py:401-457`, `_commit_truncated_displacement_kernel` `particle_dat_kernels.py:517-546`, `budget_sphere_fraction` `particle_dat_kernels.py:493-514`, `planar_truncation_t` `rigid_vbd_kernels.py:7277-7308`.
