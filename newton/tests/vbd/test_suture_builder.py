@@ -164,6 +164,28 @@ def test_add_suture_needle_rejects_bad_input(test, device):
             builder.add_suture_needle(body, tip_k, centerline=centerline)
 
 
+def test_add_builder_merges_suture_needles(test, device):
+    with wp.ScopedDevice(device):
+        builder, _table, needle, tip, _shapes, centerline, thread_bodies = _scene(device)
+        builder.add_suture_needle(needle, tip, centerline=centerline, thread_bodies=thread_bodies)
+        merged = newton.ModelBuilder()
+        SolverVBD.register_custom_attributes(merged)
+        merged.add_builder(builder)
+        merged.add_builder(builder, xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()))
+        test.assertEqual(merged.suture_needle_count, 2)
+        test.assertEqual(merged.suture_needle_group, [1, 2])
+        n_segments = builder.suture_segment_count
+        test.assertEqual(merged.suture_needle_segment_start, [0, n_segments])
+        test.assertEqual(merged.suture_needle_body[1], needle + builder.body_count)
+        test.assertEqual(merged.suture_needle_tip_shape[1], tip + builder.shape_count)
+        test.assertEqual(merged.suture_segment_body[n_segments], needle + builder.body_count)
+        model = merged.finalize(skip_validation_inertia=True)
+        gate = model.shape_contact_gate.numpy()
+        test.assertEqual(int(gate[tip]), 1)
+        test.assertEqual(int(gate[tip + builder.shape_count]), 2)
+        test.assertEqual(model.suture_needle_segment_start.numpy().tolist(), [0, n_segments, 2 * n_segments])
+
+
 devices = get_test_devices()
 
 
@@ -176,6 +198,7 @@ add_function_test(TestSutureBuilder, "test_add_suture_needle_segments_tip_first"
 add_function_test(TestSutureBuilder, "test_add_suture_needle_sets_shape_gate", test_add_suture_needle_sets_shape_gate, devices=devices)
 add_function_test(TestSutureBuilder, "test_add_suture_needle_custom_attribute_defaults", test_add_suture_needle_custom_attribute_defaults, devices=devices)
 add_function_test(TestSutureBuilder, "test_add_suture_needle_rejects_bad_input", test_add_suture_needle_rejects_bad_input, devices=devices)
+add_function_test(TestSutureBuilder, "test_add_builder_merges_suture_needles", test_add_builder_merges_suture_needles, devices=devices)
 
 
 if __name__ == "__main__":

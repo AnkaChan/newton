@@ -805,6 +805,20 @@ class ModelBuilder:
         "muscle_activations": Model.AttributeSpec("muscle"),
         "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
         "muscle_points": Model.AttributeSpec("muscle_point"),
+        # suture needles: string frequencies; add_builder supplies the segment start array explicitly
+        "suture_needle_body": Model.AttributeSpec("suture_needle", references=Model.AttributeFrequency.BODY),
+        "suture_needle_tip_shape": Model.AttributeSpec("suture_needle", references=Model.AttributeFrequency.SHAPE),
+        "suture_needle_tip_local": Model.AttributeSpec("suture_needle"),
+        "suture_needle_group": Model.AttributeSpec("suture_needle"),
+        "suture_needle_max_tunnels": Model.AttributeSpec("suture_needle"),
+        "suture_needle_max_points": Model.AttributeSpec("suture_needle"),
+        "suture_needle_segment_start": Model.AttributeSpec(
+            "suture_needle", references="suture_segment", compaction_policy="start"
+        ),
+        "suture_segment_body": Model.AttributeSpec("suture_segment", references=Model.AttributeFrequency.BODY),
+        "suture_segment_local_a": Model.AttributeSpec("suture_segment"),
+        "suture_segment_local_b": Model.AttributeSpec("suture_segment"),
+        "suture_segment_rest_length": Model.AttributeSpec("suture_segment"),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
         "_equality_constraint_world_start": Model.AttributeSpec(
             Model.AttributeFrequency.WORLD,
@@ -2097,8 +2111,8 @@ class ModelBuilder:
         """Tunnel capacities accumulated for :attr:`Model.suture_needle_max_tunnels`."""
         self.suture_needle_max_points: list[int] = []
         """Tunnel point capacities accumulated for :attr:`Model.suture_needle_max_points`."""
-        self.suture_needle_segment_start: list[int] = [0]
-        """Rod segment range offsets accumulated for :attr:`Model.suture_needle_segment_start`."""
+        self.suture_needle_segment_start: list[int] = []
+        """First rod segment of each needle, accumulated for :attr:`Model.suture_needle_segment_start`."""
         self.suture_segment_body: list[int] = []
         """Rod segment bodies accumulated for :attr:`Model.suture_segment_body`."""
         self.suture_segment_local_a: list[Vec3] = []
@@ -3942,6 +3956,8 @@ class ModelBuilder:
         start_arrays = {kind: base + copy_range * counts[kind] for kind, base in bases.items()}
         muscle_point_base = array_starts.get("muscle_bodies", len(self.muscle_bodies))
         start_arrays["muscle_point"] = muscle_point_base + copy_range * len(builder.muscle_bodies)
+        suture_segment_base = array_starts.get("suture_segment_body", len(self.suture_segment_body))
+        start_arrays["suture_segment"] = suture_segment_base + copy_range * len(builder.suture_segment_body)
 
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
@@ -4227,6 +4243,8 @@ class ModelBuilder:
         self.joint_dof_count += copy_count * counts["joint_dof"]
         self.joint_coord_count += copy_count * counts["joint_coord"]
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
+        if builder.suture_needle_count:
+            self._rebuild_suture_gate()
 
         custom_attributes = self._prepare_builder_custom_attributes(builder)
         for copy_index, world in enumerate(worlds.tolist()):
@@ -11421,6 +11439,7 @@ class ModelBuilder:
 
         group = 1 << needle
         needle_xform = self.body_q[needle_body]
+        self.suture_needle_segment_start.append(len(self.suture_segment_body))
 
         for a, b in zip(points[:-1], points[1:]):
             self.suture_segment_body.append(int(needle_body))
@@ -11463,8 +11482,31 @@ class ModelBuilder:
         self.suture_needle_group.append(group)
         self.suture_needle_max_tunnels.append(int(max_tunnels))
         self.suture_needle_max_points.append(int(max_points_per_tunnel))
-        self.suture_needle_segment_start.append(len(self.suture_segment_body))
         return needle
+
+    @property
+    def suture_segment_count(self) -> int:
+        """The number of rod curve segments of all suture needles."""
+        return len(self.suture_segment_body)
+
+    def _rebuild_suture_gate(self) -> None:
+        """Recompute the needle group bits and the shape gate from the needle and segment lists.
+
+        Called after :meth:`add_builder` merges suture needles, because a group bit is the needle index.
+        """
+        count = len(self.suture_needle_body)
+        if count > 31:
+            raise ValueError("At most 31 suture needles are supported (one gate bit per needle)")
+        self.suture_needle_group = [1 << i for i in range(count)]
+        gate: dict[int, int] = {}
+        for i in range(count):
+            start = self.suture_needle_segment_start[i]
+            end = self.suture_needle_segment_start[i + 1] if i + 1 < count else len(self.suture_segment_body)
+            bodies = {self.suture_needle_body[i], *self.suture_segment_body[start:end]}
+            for body in bodies:
+                for shape in self.body_shapes.get(body, []):
+                    gate[shape] = gate.get(shape, 0) | (1 << i)
+        self.shape_contact_gate = gate
 
     def add_spring(
         self,
@@ -16094,8 +16136,9 @@ class ModelBuilder:
             m.suture_needle_group = _to_wp_array(self.suture_needle_group, wp.int32, requires_grad=False)
             m.suture_needle_max_tunnels = _to_wp_array(self.suture_needle_max_tunnels, wp.int32, requires_grad=False)
             m.suture_needle_max_points = _to_wp_array(self.suture_needle_max_points, wp.int32, requires_grad=False)
+            m.suture_segment_count = self.suture_segment_count
             m.suture_needle_segment_start = _to_wp_array(
-                self.suture_needle_segment_start, wp.int32, requires_grad=False
+                [*self.suture_needle_segment_start, self.suture_segment_count], wp.int32, requires_grad=False
             )
             m.suture_segment_body = _to_wp_array(self.suture_segment_body, wp.int32, requires_grad=False)
             m.suture_segment_local_a = _to_wp_array(self.suture_segment_local_a, wp.vec3, requires_grad=False)

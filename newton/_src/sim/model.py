@@ -1842,6 +1842,8 @@ class Model:
         """Total number of rigid-body-to-particle attachments in the system."""
         self.suture_needle_count: int = 0
         """Total number of suture needles in the system."""
+        self.suture_segment_count: int = 0
+        """Total number of rod curve segments of all suture needles."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
         self.articulation_count: int = 0

@@ -39,7 +39,20 @@ from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
-from .suture_kernels import build_tet_neighbors
+from .suture_kernels import (
+    SuturePointData,
+    SutureRodData,
+    accumulate_suture_row_force_and_hessian,
+    accumulate_suture_rows_per_body,
+    accumulate_suture_tip_force,
+    begin_suture_update,
+    build_tet_neighbors,
+    initialize_suture_points,
+    refresh_suture_points,
+    update_duals_suture_points,
+    update_suture_gate,
+    update_suture_needle_state,
+)
 from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
@@ -3032,6 +3045,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._initialize_particles(state_in, state_out, contacts, dt)
         if self.model.attachment_particle_body_count > 0:
             self._initialize_particle_body_attachments(state_in, dt)
+        if self.suture_needle_count > 0:
+            self._initialize_suture_points(state_in, dt)
 
         rigid_due, soft_due = self._collision_detection_due((_Frequency.PRE_POST_INIT,))
         # With contact history, the post-initialization pass carries the state just
@@ -3056,8 +3071,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Material can redistribute between fixed guides even without any rigid bodies.
             if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
                 self._update_tendon_routing(state_in, dt, False)
+            if self.suture_needle_count > 0:
+                self._refresh_suture_points(state_in)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
+            if self.suture_needle_count > 0:
+                self._update_duals_suture_points(state_in)
             if self.model.attachment_particle_body_count > 0:
                 wp.launch(
                     kernel=update_duals_particle_body_attachments,
@@ -3101,6 +3120,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._finalize_rigid_bodies(state_in, state_out, dt)
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
+        if self.suture_needle_count > 0:
+            self._update_suture_needles(state_in, contacts)
         self._finalize_particles(state_out, dt)
         self._save_tendon_history(state_out)
 
@@ -3432,8 +3453,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError("suture_tunnel_update_interval must be at least 1")
         if self.suture_closest_search_window < 1:
             raise ValueError("suture_closest_search_window must be at least 1")
-        if model.tet_count == 0:
-            raise ValueError("Suture needles need a tetrahedral soft body in the model")
         if model.particle_world_start is not None and model.world_count > 1:
             raise NotImplementedError("Suture needles support a single world for now")
 
@@ -3477,17 +3496,35 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._suture_needle_tip_record_key = wp.zeros(n, dtype=wp.int64, device=device)
         self._suture_substep = wp.zeros(1, dtype=wp.int32, device=device)
         self._suture_point_overflow = wp.zeros(1, dtype=wp.int32, device=device)
+        self._suture_due = wp.zeros(1, dtype=wp.int32, device=device)
+        self._suture_needle_entered = wp.zeros(n, dtype=wp.int32, device=device)
+        shape_to_needle = np.full(model.shape_count, -1, dtype=np.int32)
+        tip_shapes = model.suture_needle_tip_shape.numpy()
+        for needle in range(n):
+            shape_to_needle[int(tip_shapes[needle])] = needle
+        self._suture_shape_to_needle = wp.array(shape_to_needle, dtype=wp.int32, device=device)
+        self._suture_empty_indices = wp.zeros(1, dtype=wp.vec3i, device=device)
+        self._suture_empty_tets = wp.zeros((1, 4), dtype=wp.int32, device=device)
+        self._suture_empty_normals = wp.zeros(1, dtype=wp.vec3, device=device)
 
-        tet_indices = model.tet_indices.numpy().reshape(-1, 4)
-        self._suture_tet_neighbors = wp.array(build_tet_neighbors(tet_indices), dtype=wp.int32, device=device)
+        tet_indices = (
+            model.tet_indices.numpy().reshape(-1, 4) if model.tet_count > 0 else np.zeros((0, 4), dtype=np.int32)
+        )
+        self._suture_tet_neighbors = wp.array(
+            build_tet_neighbors(tet_indices).reshape(-1, 4), dtype=wp.int32, device=device
+        )
 
-        # Tunnel point spacing: half the mean tet edge length, clamped to [0.5 mm, 2 mm].
+        # Tunnel point spacing: half the mean tet edge length, clamped to [0.5 mm, 2 mm]. A model without
+        # tets cannot open a tunnel; it keeps the lower clamp as a placeholder.
         if point_spacing is None:
-            q = model.particle_q.numpy()
-            edges = np.concatenate(
-                [np.linalg.norm(q[tet_indices[:, a]] - q[tet_indices[:, b]], axis=1) for a, b in _TET_EDGE_PAIRS]
-            )
-            self._suture_point_spacing = float(np.clip(0.5 * float(edges.mean()), 0.5e-3, 2.0e-3))
+            if model.tet_count > 0:
+                q = model.particle_q.numpy()
+                edges = np.concatenate(
+                    [np.linalg.norm(q[tet_indices[:, a]] - q[tet_indices[:, b]], axis=1) for a, b in _TET_EDGE_PAIRS]
+                )
+                self._suture_point_spacing = float(np.clip(0.5 * float(edges.mean()), 0.5e-3, 2.0e-3))
+            else:
+                self._suture_point_spacing = 0.5e-3
         else:
             if not (point_spacing > 0.0):
                 raise ValueError("suture_point_spacing must be positive")
@@ -3511,6 +3548,268 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             radii[needle] = needle_radius + margin + gap + particle_radius + float(gate_slack)
         self._suture_gate_radius = radii
         self._suture_gate_radius_wp = wp.array(radii, dtype=wp.float32, device=device)
+
+        vbd_attrs = getattr(model, "vbd", None)
+        if vbd_attrs is None or not hasattr(vbd_attrs, "suture_grip"):
+            raise ValueError(
+                "Suture needles need the SolverVBD custom attributes; call "
+                "SolverVBD.register_custom_attributes(builder) before adding particles"
+            )
+        self._suture_grip = vbd_attrs.suture_grip
+        self._suture_mu = vbd_attrs.suture_mu
+        self._suture_puncture_force = vbd_attrs.suture_puncture_force
+        self._suture_puncture_cos = vbd_attrs.suture_puncture_cos
+
+        rod = SutureRodData()
+        rod.segment_body = model.suture_segment_body
+        rod.segment_local_a = model.suture_segment_local_a
+        rod.segment_local_b = model.suture_segment_local_b
+        rod.needle_segment_start = model.suture_needle_segment_start
+        rod.needle_body = model.suture_needle_body
+        rod.needle_tip_local = model.suture_needle_tip_local
+        rod.needle_group = model.suture_needle_group
+        self._suture_rod = rod
+
+        pts = SuturePointData()
+        pts.tet = self._suture_point_tet
+        pts.bary = self._suture_point_bary
+        pts.active = self._suture_point_active
+        pts.segment = self._suture_point_segment
+        pts.u = self._suture_point_u
+        pts.tangent = self._suture_point_tangent
+        pts.segment_start = self._suture_point_segment_start
+        pts.u_start = self._suture_point_u_start
+        pts.lam = self._suture_point_lambda
+        pts.lam_t = self._suture_point_lambda_t
+        pts.rho = self._suture_point_rho
+        pts.rho_t = self._suture_point_rho_t
+        pts.ds = self._suture_point_ds
+        pts.stiffness = self._suture_point_stiffness
+        pts.tunnel_capacity = tunnels
+        pts.point_capacity = points
+        self._suture_points = pts
+        self._suture_point_total = total
+
+    def _suture_tet_indices(self) -> wp.array:
+        """The tet index array viewed as ``[tet_count, 4]``."""
+        if self.model.tet_count == 0:
+            return self._suture_empty_tets
+        return self.model.tet_indices.reshape((self.model.tet_count, 4))
+
+    def _initialize_suture_points(self, state_in: State, dt: float) -> None:
+        """Once per step: multiplier retention, step-start rod place and the ALM metrics of every row."""
+        model = self.model
+        wp.launch(
+            kernel=initialize_suture_points,
+            dim=self._suture_point_total,
+            inputs=[
+                dt,
+                self.rigid_avbd_gamma,
+                self._suture_points,
+                self._suture_rod,
+                self._suture_tet_indices(),
+                model.particle_inv_mass,
+                model.particle_flags,
+                state_in.body_q,
+                model.body_com,
+                model.body_inv_mass,
+                model.body_inv_inertia,
+                self.body_structural_k,
+            ],
+            device=self.device,
+        )
+
+    def _refresh_suture_points(self, state_in: State) -> None:
+        """Every iteration: the closest place of each row on the rod curve and its tangent."""
+        wp.launch(
+            kernel=refresh_suture_points,
+            dim=self._suture_point_total,
+            inputs=[
+                self.suture_closest_search_window,
+                self._suture_points,
+                self._suture_rod,
+                self._suture_tet_indices(),
+                state_in.particle_q,
+                state_in.body_q,
+            ],
+            device=self.device,
+        )
+
+    def _update_duals_suture_points(self, state_in: State) -> None:
+        """After both passes of an iteration: advance the transverse and tangential multipliers."""
+        wp.launch(
+            kernel=update_duals_suture_points,
+            dim=self._suture_point_total,
+            inputs=[
+                self._suture_points,
+                self._suture_rod,
+                self._suture_tet_indices(),
+                state_in.particle_q,
+                self.particle_q_prev,
+                state_in.body_q,
+                self.body_q_prev,
+                self._suture_grip,
+                self._suture_mu,
+            ],
+            device=self.device,
+        )
+
+    def suture_set_points(
+        self,
+        needle: int,
+        tunnel: int,
+        tets,
+        barys,
+        *,
+        state: State,
+        ds: float | None = None,
+    ) -> None:
+        """Write tunnel points of one tunnel directly and refresh their rod places (tests and tools).
+
+        The tunnel becomes a fixed (through) tunnel with every point active, so its rows act while
+        the needle state machine leaves it alone. ``ds`` is the tunnel length each point represents;
+        ``None`` uses the resolved point spacing.
+        """
+        if self.suture_needle_count == 0:
+            raise ValueError("The model has no suture needle")
+        tets = [int(t) for t in tets]
+        count = len(tets)
+        if count > self._suture_point_capacity:
+            raise ValueError(f"{count} points exceed the capacity {self._suture_point_capacity}")
+        base = (needle * self._suture_tunnel_capacity + tunnel) * self._suture_point_capacity
+        spacing = self._suture_point_spacing if ds is None else float(ds)
+
+        def _write(array, values, dtype):
+            host = array.numpy()
+            host[base : base + count] = np.asarray(values, dtype=dtype)
+            array.assign(host)
+
+        _write(self._suture_point_tet, tets, np.int32)
+        _write(self._suture_point_bary, [np.asarray(b, dtype=np.float32) for b in barys], np.float32)
+        _write(self._suture_point_active, [1] * count, np.int32)
+        _write(self._suture_point_segment, [-1] * count, np.int32)
+        _write(self._suture_point_segment_start, [-1] * count, np.int32)
+        _write(self._suture_point_u, [0.0] * count, np.float32)
+        _write(self._suture_point_u_start, [0.0] * count, np.float32)
+        _write(self._suture_point_lambda, [np.zeros(3, dtype=np.float32)] * count, np.float32)
+        _write(self._suture_point_lambda_t, [0.0] * count, np.float32)
+        _write(self._suture_point_ds, [spacing] * count, np.float32)
+        _write(self._suture_point_stiffness, [np.inf] * count, np.float32)
+
+        tunnel_index = needle * self._suture_tunnel_capacity + tunnel
+        host = self._suture_tunnel_state.numpy(); host[tunnel_index] = 2; self._suture_tunnel_state.assign(host)
+        host = self._suture_tunnel_point_count.numpy(); host[tunnel_index] = count; self._suture_tunnel_point_count.assign(host)
+        host = self._suture_tunnel_count.numpy(); host[needle] = max(int(host[needle]), tunnel + 1); self._suture_tunnel_count.assign(host)
+        self._refresh_suture_points(state)
+
+    def _update_suture_needles(self, state: State, contacts: Contacts | None) -> None:
+        """At the end of a substep: tip force, needle state machine and gate recompute (chapter 2)."""
+        model = self.model
+        wp.launch(
+            kernel=begin_suture_update,
+            dim=1,
+            inputs=[self.suture_tunnel_update_interval, self._suture_substep, self._suture_due],
+            device=self.device,
+        )
+        if contacts is not None and contacts.soft_contact_max > 0:
+            wp.launch(
+                kernel=accumulate_suture_tip_force,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    self._suture_due,
+                    self._suture_shape_to_needle,
+                    _make_soft_contact_filter_data(model, contacts, state.particle_q, state.body_q),
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_max,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    model.shape_body,
+                    model.shape_margin,
+                    state.body_q,
+                    state.particle_q,
+                    model.particle_radius,
+                    self.body_particle_contact_penalty_k,
+                    self.rigid_soft_contact_use_log_barrier,
+                ],
+                outputs=[self._suture_needle_tip_force, self._suture_needle_tip_record_key],
+                device=self.device,
+            )
+        wp.launch(
+            kernel=update_suture_needle_state,
+            dim=self.suture_needle_count,
+            inputs=[
+                self._suture_due,
+                1 if self.suture_armed else 0,
+                self._suture_point_spacing,
+                self._suture_points,
+                self._suture_rod,
+                self._suture_tet_indices(),
+                self._suture_tet_neighbors,
+                self.particle_adjacency,
+                state.particle_q,
+                state.body_q,
+                self._suture_puncture_force,
+                self._suture_puncture_cos,
+                contacts.soft_contact_indices if contacts is not None else self._suture_empty_indices,
+                contacts.soft_contact_normal if contacts is not None else self._suture_empty_normals,
+                model.suture_needle_max_tunnels,
+                model.suture_needle_max_points,
+                self._suture_gate_radius_wp,
+                self._suture_needle_state,
+                self._suture_needle_tunnel,
+                self._suture_needle_entered,
+                self._suture_tunnel_count,
+                self._suture_tunnel_state,
+                self._suture_tunnel_point_count,
+                self._suture_needle_tip_tet,
+                self._suture_needle_last_tip,
+                self._suture_needle_travel,
+                self._suture_needle_tip_force,
+                self._suture_needle_tip_record_key,
+                self._suture_point_overflow,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            kernel=update_suture_gate,
+            dim=model.particle_count,
+            inputs=[
+                self._suture_due,
+                self.suture_needle_count,
+                self._suture_points,
+                self._suture_rod,
+                self._suture_tet_indices(),
+                state.particle_q,
+                state.body_q,
+                self._suture_tunnel_state,
+                self._suture_tunnel_point_count,
+                self._suture_needle_state,
+                self._suture_needle_tunnel,
+                self._suture_gate_radius_wp,
+            ],
+            outputs=[model.particle_contact_gate],
+            device=self.device,
+        )
+
+    def suture_needle_state(self) -> np.ndarray:
+        """Per-needle state: 0 when no tunnel is growing (the tip may puncture), 1 while a tunnel grows."""
+        return self._suture_needle_state.numpy()
+
+    def suture_tunnel_points(self, needle: int, tunnel: int) -> tuple[np.ndarray, np.ndarray]:
+        """Tets and barycentric weights of the points of one tunnel, in creation order."""
+        slot = needle * self._suture_tunnel_capacity + tunnel
+        count = int(self._suture_tunnel_point_count.numpy()[slot])
+        base = slot * self._suture_point_capacity
+        tets = self._suture_point_tet.numpy()[base : base + count]
+        barys = self._suture_point_bary.numpy()[base : base + count]
+        return tets, barys
+
+    def suture_point_overflow(self) -> bool:
+        """Whether a tunnel reached its point capacity since construction."""
+        return bool(self._suture_point_overflow.numpy()[0])
 
     def _init_rigid_dat_body_bounding_radius(self, model: Model):
         """Compute a conservative surface radius about each rigid body's COM.
@@ -4502,6 +4801,29 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
+            if self.suture_needle_count > 0:
+                wp.launch(
+                    kernel=accumulate_suture_row_force_and_hessian,
+                    dim=self._suture_point_total,
+                    inputs=[
+                        dt,
+                        color,
+                        model.particle_colors,
+                        self._suture_points,
+                        self._suture_rod,
+                        self._suture_tet_indices(),
+                        state_in.particle_q,
+                        self.particle_q_prev,
+                        body_q_for_particles,
+                        body_q_prev_for_particles,
+                        self._suture_grip,
+                        self._suture_mu,
+                        self.friction_epsilon,
+                    ],
+                    outputs=[self.particle_forces, self.particle_hessians],
+                    device=self.device,
+                )
+
             if contacts is not None and contacts.soft_contact_max > 0:
                 contact_material_and_body_inputs = [
                     self.body_particle_contact_penalty_k,
@@ -4929,6 +5251,36 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self._attachment_particle_body_lambda,
                         self.body_particle_attachment_offsets,
                         self.body_particle_attachment_indices,
+                    ],
+                    outputs=[
+                        self.body_forces,
+                        self.body_torques,
+                        self.body_hessian_ll,
+                        self.body_hessian_al,
+                        self.body_hessian_aa,
+                    ],
+                    device=self.device,
+                )
+
+            if self.suture_needle_count > 0:
+                wp.launch(
+                    kernel=accumulate_suture_rows_per_body,
+                    dim=color_group.size,
+                    inputs=[
+                        dt,
+                        color_group,
+                        self._suture_points,
+                        self._suture_rod,
+                        self._suture_tet_indices(),
+                        state_in.particle_q,
+                        self.particle_q_prev,
+                        state_in.body_q,
+                        self.body_q_prev,
+                        model.body_com,
+                        self.body_inv_mass_effective,
+                        self._suture_grip,
+                        self._suture_mu,
+                        self.friction_epsilon,
                     ],
                     outputs=[
                         self.body_forces,
