@@ -1387,19 +1387,42 @@ def snapshot_contact_history(collision_info: TriMeshCollisionInfo, alm: Particle
 
 @wp.kernel
 def _record_contact_coverage_kernel(global_pair_counts: wp.array[wp.int32], coverage: wp.array[wp.int32]):
-    """Coverage is 1 only when neither family dropped records in the last detection."""
-    ok = int(1)
+    """Clear the coverage flag when either family dropped records in the last detection.
+
+    The flag only ever goes down within a step, so with two detections per step it
+    reports whether both stored every pair; the step start resets it to one.
+    """
     if global_pair_counts[VT_PAIR_OVERFLOW] != 0 or global_pair_counts[EE_PAIR_OVERFLOW] != 0:
-        ok = 0
-    coverage[0] = ok
+        coverage[0] = 0
 
 
 def record_contact_coverage(collision_info: TriMeshCollisionInfo, coverage: wp.array, device) -> None:
-    """Write the detection's coverage status (graph-safe, no host readback)."""
+    """Clear the coverage flag if the last detection dropped records (graph-safe, no host readback)."""
     wp.launch(
         _record_contact_coverage_kernel,
         dim=1,
         inputs=[collision_info.global_pair_counts],
         outputs=[coverage],
+        device=device,
+    )
+
+
+@wp.kernel
+def _rebase_displacement_kernel(
+    trial: wp.array[wp.vec3],
+    x_start: wp.array[wp.vec3],
+    displacement: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    displacement[i] = trial[i] - x_start[i]
+
+
+def rebase_displacement(trial: wp.array, x_start: wp.array, displacement: wp.array, device) -> None:
+    """Express the trial as a displacement from a new detection pose ``x_start``."""
+    wp.launch(
+        _rebase_displacement_kernel,
+        dim=trial.shape[0],
+        inputs=[trial, x_start],
+        outputs=[displacement],
         device=device,
     )

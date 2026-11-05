@@ -186,6 +186,78 @@ def test_alm_dat_step_is_graph_capturable(test, device):
 devices = get_test_devices()
 
 
+def _schedule_types():
+    from newton._src.solvers.solver import SolverBase  # noqa: PLC0415
+
+    return SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType
+
+
+def test_alm_dat_default_schedule_detects_twice(test, device):
+    """alm_dat follows the host's default soft self-contact schedule: a second detection after initialization."""
+    Slot, Freq = _schedule_types()
+    model, _lower = _two_layer_drop_model(device)
+    solver = _solver(model, "alm_dat")
+    test.assertEqual(solver._default_collision_frequency_type(Slot.SOFT_SELF_CONTACT), Freq.PRE_POST_INIT)
+
+
+def test_alm_dat_rejects_in_iteration_detection(test, device):
+    """Only PRE_INIT and PRE_POST_INIT keep the certified anchor; ITERATIONS is refused at the step."""
+    Slot, Freq = _schedule_types()
+    model, _lower = _two_layer_drop_model(device)
+    solver = _solver(model, "alm_dat")
+    solver.set_collision_frequency(
+        collision_frequency_type={Slot.SOFT_SELF_CONTACT: Freq.ITERATIONS},
+        collision_frequency={Slot.SOFT_SELF_CONTACT: 1},
+    )
+    state0, state1, control = model.state(), model.state(), model.control()
+    with test.assertRaises(ValueError):
+        solver.step(state0, state1, control, None, 1.0 / 60.0)
+
+
+def _free_sheet_model(device, speed):
+    """One free cloth sheet without gravity, translating at ``speed`` along +z, no pairs within reach."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+    builder.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0, 0.0, speed),
+        dim_x=6,
+        dim_y=6,
+        cell_x=0.05,
+        cell_y=0.05,
+        mass=0.1,
+        tri_ke=1.0e3,
+        tri_ka=1.0e3,
+        tri_kd=1.0e-1,
+        edge_ke=1.0e-2,
+        particle_radius=0.005,
+    )
+    builder.color()
+    return builder.finalize(device=device)
+
+
+def test_alm_dat_second_detection_doubles_the_admitted_motion(test, device):
+    """With one detection the committed motion per step is one budget; with two it is up to two budgets."""
+    Slot, Freq = _schedule_types()
+    dt = 1.0 / 60.0
+    budget = 0.5 * 0.85 * (0.02 + 0.01)  # margin + gap of _solver, relaxation 0.85
+    speed = 1.5 * budget / dt  # the free flight asks for one and a half budgets per step
+    admitted = {}
+    for schedule in (Freq.PRE_INIT, Freq.PRE_POST_INIT):
+        model = _free_sheet_model(device, speed)
+        solver = _solver(model, "alm_dat")
+        solver.set_collision_frequency(collision_frequency_type={Slot.SOFT_SELF_CONTACT: schedule})
+        state0, state1, control = model.state(), model.state(), model.control()
+        q0 = state0.particle_q.numpy().copy()
+        solver.step(state0, state1, control, None, dt)
+        q1 = state1.particle_q.numpy()
+        moved = np.linalg.norm(q1 - q0, axis=1)
+        test.assertTrue(np.isfinite(moved).all())
+        admitted[schedule] = float(np.median(moved))
+    test.assertAlmostEqual(admitted[Freq.PRE_INIT], budget, delta=0.05 * budget)
+    test.assertAlmostEqual(admitted[Freq.PRE_POST_INIT], 1.5 * budget, delta=0.05 * budget)
+
+
 class TestSolverVBDAlmDat(unittest.TestCase):
     pass
 
@@ -231,3 +303,22 @@ add_function_test(
 if __name__ == "__main__":
     wp.clear_kernel_cache()
     unittest.main(verbosity=2)
+
+add_function_test(
+    TestSolverVBDAlmDat,
+    "test_alm_dat_default_schedule_detects_twice",
+    test_alm_dat_default_schedule_detects_twice,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDAlmDat,
+    "test_alm_dat_rejects_in_iteration_detection",
+    test_alm_dat_rejects_in_iteration_detection,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBDAlmDat,
+    "test_alm_dat_second_detection_doubles_the_admitted_motion",
+    test_alm_dat_second_detection_doubles_the_admitted_motion,
+    devices=devices,
+)

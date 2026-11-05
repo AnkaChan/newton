@@ -51,6 +51,7 @@ from .particle_dat_kernels import (
     create_particle_contact_alm_state,
     create_particle_contact_dat_planes,
     match_contact_history,
+    rebase_displacement,
     record_contact_coverage,
     snapshot_contact_history,
     truncate_against_contact_planes,
@@ -609,9 +610,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 margin) with a hard wall, plus gap-rate damping with ``soft_contact_kd``
                 on the closing motion inside the margin and Coulomb friction with
                 ``soft_contact_mu`` as a tangential multiplier capped at ``mu`` times the
-                row's normal force. Requires ``particle_enable_self_contact=True``, one soft
-                self-contact detection per step (``PRE_INIT``), and is incompatible with
-                ``rigid_soft_enable_dat``.
+                row's normal force. Requires ``particle_enable_self_contact=True`` and is
+                incompatible with ``rigid_soft_enable_dat``. Follows the soft self-contact
+                schedule: ``PRE_POST_INIT`` (default) detects at the step start and once
+                more at the certified anchor after the inertial step, which doubles the
+                motion admitted per step; ``PRE_INIT`` detects once.
 
                 .. experimental::
                     ``particle_self_contact_method``, ``particle_dat_plane_update_interval``,
@@ -1257,6 +1260,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._dat_planes = None
         self._dat_alm_state = None
         self._dat_anchor = None
+        self._dat_trial_scratch = None
         self._dat_coverage = None
         self._alm_dat_iteration = 0
         self._init_particle_system(
@@ -1418,6 +1422,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
             if self._alm_dat:
                 self._dat_anchor = wp.zeros_like(model.particle_q, device=self.device)
+                self._dat_trial_scratch = wp.zeros_like(model.particle_q, device=self.device)
                 self._dat_coverage = wp.zeros(1, dtype=wp.int32, device=self.device)
                 # frame-to-frame multiplier matching merges sorted rows
                 self._self_contact_detector().sort_contact_rows = True
@@ -3291,15 +3296,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # With contact history, the post-initialization pass carries the state just
         # restored, like the in-iteration passes; its match indices refer to the
         # pre-initialization pass, not to the previous step's snapshot.
-        self._mid_step_detection(
-            state_in,
-            state_out,
-            contacts,
-            dt,
-            rigid_due=rigid_due,
-            soft_due=soft_due,
-            preserve_history=self.rigid_contact_history,
-        )
+        if self._alm_dat and soft_due:
+            # alm_dat detects at the certified anchor, not at the trial the iterate holds
+            self._alm_dat_redetect(state_in, state_out, contacts, dt, rigid_due=rigid_due)
+        else:
+            self._mid_step_detection(
+                state_in,
+                state_out,
+                contacts,
+                dt,
+                rigid_due=rigid_due,
+                soft_due=soft_due,
+                preserve_history=self.rigid_contact_history,
+            )
 
         for iter_num in range(self.iterations):
             rigid_due = self.collision_pipeline is not None and self._rigid_collision_is_due(iter_num)
@@ -4128,7 +4137,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _alm_dat_initialize(self, state_in: State) -> None:
         """Start the step's certified anchor at the detection pose and truncate the inertial target."""
         self._alm_dat_iteration = 0
-        # dropped detection records would leave pairs without planes: record it
+        # dropped detection records would leave pairs without planes: record it (the flag
+        # only goes down within a step, so a second detection cannot hide a loss)
+        self._dat_coverage.fill_(1)
         record_contact_coverage(self._self_contact_info_source, self._dat_coverage, self.device)
         self._dat_anchor.assign(self.pos_prev_collision_detection)
         self._alm_dat_materialize_trial(state_in)
@@ -4147,6 +4158,49 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
         match_contact_history(self._self_contact_info_source, self._dat_alm_state, self.device)
         self._alm_dat_truncate(state_in.particle_q, refresh_normals=True)
+
+    def _alm_dat_redetect(
+        self, state_in: State, state_out: State, contacts: Contacts | None, dt: float, *, rigid_due: bool
+    ) -> None:
+        """Second certified anchor (``PRE_POST_INIT``): detect again at the anchor after the inertial commit.
+
+        The anchor is penetration-free for every stored pair, so it serves as the new
+        detection pose: the motion reference and the budget restart there, the planes
+        are rebuilt for the re-assigned slots and the multipliers follow their rows
+        through matching. The trial keeps its position; only its reference changes.
+        """
+        # the detection view carries the anchor; keep the trial aside meanwhile
+        self._dat_trial_scratch.assign(state_in.particle_q)
+        state_in.particle_q.assign(self._dat_anchor)
+        snapshot_contact_history(self._self_contact_info_source, self._dat_alm_state, self.device)
+        self._mid_step_detection(
+            state_in,
+            state_out,
+            contacts,
+            dt,
+            rigid_due=rigid_due,
+            soft_due=True,
+            preserve_history=self.rigid_contact_history,
+        )
+        record_contact_coverage(self._self_contact_info_source, self._dat_coverage, self.device)
+        # the reference is now the anchor: re-base the trial and restore it
+        rebase_displacement(
+            self._dat_trial_scratch, self.pos_prev_collision_detection, self.particle_displacements, self.device
+        )
+        state_in.particle_q.assign(self._dat_trial_scratch)
+        self._dat_planes.vt_valid.zero_()
+        self._dat_planes.ee_valid.zero_()
+        build_contact_planes(
+            self.model,
+            self._dat_anchor,
+            state_in.particle_q,
+            self.trimesh_collision_info,
+            self._dat_planes,
+            margin=self._dat_margin,
+            refresh_normals=True,
+            launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
+        )
+        match_contact_history(self._self_contact_info_source, self._dat_alm_state, self.device)
 
     def particle_dat_coverage_ok(self) -> bool:
         """Return whether the last ``alm_dat`` step's detection stored every found pair.
@@ -5913,10 +5967,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         Frequency = SolverBase.CollisionFrequencyType
         if slot == SolverBase.CollisionSlot.SOFT_SELF_CONTACT and self.particle_enable_self_contact:
-            if self._alm_dat:
-                # stored planes need one certified detection per step; a post-init or
-                # in-iteration detection would reset the motion reference at the trial pose
-                return Frequency.PRE_INIT
             interval = self._deprecated_particle_interval
             if interval is None or interval == 0:
                 return Frequency.PRE_POST_INIT
@@ -6036,10 +6086,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "particle_enable_self_contact requires an active soft self-collision schedule: "
                 "set the SOFT_SELF_CONTACT slot to PRE_INIT, PRE_POST_INIT, or ITERATIONS, not NONE."
             )
-        if self._alm_dat and self._self_contact_mode_this_step != Frequency.PRE_INIT:
+        if self._alm_dat and self._self_contact_mode_this_step not in (Frequency.PRE_INIT, Frequency.PRE_POST_INIT):
             raise ValueError(
-                "particle_self_contact_method='alm_dat' requires one soft self-contact detection per step: "
-                "set the SOFT_SELF_CONTACT slot to PRE_INIT."
+                "particle_self_contact_method='alm_dat' detects at the step start and, with PRE_POST_INIT, once more "
+                "at the certified anchor after initialization: set the SOFT_SELF_CONTACT slot to PRE_INIT or "
+                "PRE_POST_INIT, not ITERATIONS."
             )
         schedules_match = self._rigid_mode_this_step == self._self_contact_mode_this_step and (
             self._rigid_mode_this_step != Frequency.ITERATIONS
