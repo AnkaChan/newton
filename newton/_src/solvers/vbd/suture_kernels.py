@@ -18,6 +18,7 @@ from ...geometry import ParticleFlags
 from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...math import orthonormal_basis
 from ...utils.mesh import MeshAdjacencyData, get_vertex_adjacent_tet_id_order, get_vertex_num_adjacent_tets
+from .particle_vbd_kernels import accumulate_elasticity_force_and_hessian
 from .rigid_vbd_kernels import (
     _alm_relaxed_ascent,
     _attachment_auto_rho,
@@ -109,8 +110,10 @@ class SuturePointData:
     rho_t: wp.array[wp.float32]
     ds: wp.array[wp.float32]
     stiffness: wp.array[wp.float32]
+    cap_normal: wp.array[wp.float32]
     tunnel_capacity: int
     point_capacity: int
+    friction_transverse_weight: float
 
 
 @wp.func
@@ -166,6 +169,27 @@ def _closest_parameter(x: wp.vec3, a: wp.vec3, b: wp.vec3) -> float:
     return wp.clamp(wp.dot(x - a, d) / dd, 0.0, 1.0)
 
 
+@wp.func
+def _series_support(a: float, b: float) -> float:
+    """Two supports in series; zero means an immovable (kinematic) side."""
+    if a <= 0.0:
+        return b
+    if b <= 0.0:
+        return a
+    return a * b / (a + b)
+
+
+@wp.func
+def _material_row_sum_norm(h: wp.mat33) -> float:
+    return wp.max(
+        wp.abs(h[0, 0]) + wp.abs(h[0, 1]) + wp.abs(h[0, 2]),
+        wp.max(
+            wp.abs(h[1, 0]) + wp.abs(h[1, 1]) + wp.abs(h[1, 2]),
+            wp.abs(h[2, 0]) + wp.abs(h[2, 1]) + wp.abs(h[2, 2]),
+        ),
+    )
+
+
 @wp.kernel
 def initialize_suture_points(
     dt: float,
@@ -173,8 +197,21 @@ def initialize_suture_points(
     points: SuturePointData,
     rod: SutureRodData,
     tet_indices: wp.array2d[wp.int32],
+    particle_q: wp.array[wp.vec3],
+    particle_q_prev: wp.array[wp.vec3],
     particle_inv_mass: wp.array[float],
     particle_flags: wp.array[wp.int32],
+    adjacency: MeshAdjacencyData,
+    tri_indices: wp.array2d[int],
+    tri_poses: wp.array[wp.mat22],
+    tri_areas: wp.array[float],
+    tri_materials: wp.array2d[float],
+    edge_indices: wp.array2d[int],
+    edge_rest_angles: wp.array[float],
+    edge_rest_lengths: wp.array[float],
+    edge_materials: wp.array2d[float],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     body_inv_mass: wp.array[float],
@@ -183,9 +220,11 @@ def initialize_suture_points(
 ):
     """Once per step: retain the multipliers, fix the step-start rod place, set rho and rho_t.
 
-    The transverse support sums the four weighted particle inverse masses (plain, not material
-    reduced; fork D15) and the body's Delassus term in the normal plane, as
-    ``step_particle_body_attachment_lambda_rho`` does for one particle and one body point.
+    The soft support is the inverse mass of the four vertices, each reduced by its material Hessian
+    as ``step_particle_body_attachment_lambda_rho`` does, weighted by the squared barycentric
+    weights. The body support is its inertial Delassus term in the normal plane plus its structural
+    stiffness, as the contact conditioning does (``_contact_body_conditioning_scale``). The row metric
+    is the two supports in series, so a light needle held by a stiff drive still gets a firm row.
     """
     i = wp.tid()
     if points.tet[i] < 0 or points.active[i] == 0:
@@ -201,16 +240,46 @@ def initialize_suture_points(
     points.lam_t[i] = lambda_retention * points.lam_t[i]
     points.segment_start[i] = segment
     points.u_start[i] = points.u[i]
+    # The friction cap uses the converged transverse multiplier of the previous step, frozen for this
+    # step, as body-body contact freezes its normal: a cap that followed the current multiplier would
+    # grow with every iteration while the tissue lags and drag the tissue along the rod.
+    points.cap_normal[i] = wp.length(points.lam[i])
 
     tet = points.tet[i]
     bary = points.bary[i]
+    inv_dt_sq = 1.0 / (dt * dt)
     w_soft = float(0.0)
     for k in range(4):
         v = tet_indices[tet, k]
         w_v = particle_inv_mass[v]
         if (particle_flags[v] & ParticleFlags.ACTIVE) == 0:
             w_v = 0.0
+        if w_v > 0.0:
+            _f, material_h = accumulate_elasticity_force_and_hessian(
+                v,
+                dt,
+                particle_q_prev,
+                particle_q,
+                tri_indices,
+                tri_poses,
+                tri_materials,
+                tri_areas,
+                edge_indices,
+                edge_rest_angles,
+                edge_rest_lengths,
+                edge_materials,
+                tet_indices,
+                tet_poses,
+                tet_materials,
+                adjacency,
+                wp.vec3(0.0),
+                wp.mat33(0.0),
+            )
+            w_v = w_v / (1.0 + dt * dt * w_v * _material_row_sum_norm(material_h))
         w_soft += bary[k] * bary[k] * w_v
+    support_soft = float(0.0)
+    if w_soft > 0.0:
+        support_soft = inv_dt_sq / w_soft
 
     t = points.tangent[i]
     n1, n2 = orthonormal_basis(t)
@@ -221,19 +290,18 @@ def initialize_suture_points(
         _contact_delassus_w(body, place_local, n2, body_q, body_com, body_inv_mass, body_inv_inertia),
     )
     w_tangent = _contact_delassus_w(body, place_local, t, body_q, body_com, body_inv_mass, body_inv_inertia)
+    support_body = float(0.0)
+    if w_body > 0.0:
+        support_body = inv_dt_sq / w_body + body_structural_k[body]
+    support_body_t = float(0.0)
+    if w_tangent > 0.0:
+        support_body_t = inv_dt_sq / w_tangent + body_structural_k[body]
 
-    support = float(0.0)
-    inv_m_eff = w_soft + w_body
-    if inv_m_eff > 0.0:
-        support = 1.0 / (dt * dt * inv_m_eff)
-    rho = _attachment_auto_rho(support, points.stiffness[i])
+    rho = _attachment_auto_rho(_series_support(support_soft, support_body), points.stiffness[i])
     points.rho[i] = rho
-
-    support_t = float(0.0)
-    inv_m_t = w_soft + w_tangent
-    if inv_m_t > 0.0:
-        support_t = 1.0 / (dt * dt * inv_m_t)
-    points.rho_t[i] = _contact_auto_tangent_rho(support_t, rho, body_structural_k[body])
+    points.rho_t[i] = _contact_auto_tangent_rho(
+        _series_support(support_soft, support_body_t), rho, body_structural_k[body]
+    )
 
 
 @wp.kernel
@@ -318,7 +386,8 @@ def evaluate_suture_row(
     The transverse part is the hard attachment row projected onto the normal plane of the rod
     tangent (``_material_force_terms`` with infinite stiffness gives ``k_eff = rho``). The
     tangential part is the capped ALM friction of body-body contact in one dimension: the force
-    ``rho_t * slip + lambda_t`` is clamped to ``mu * (|f_perp| + grip * ds)`` and the Hessian is
+    ``rho_t * slip + lambda_t`` is clamped to ``mu * (cap_normal + grip * ds)``, with ``cap_normal`` the
+    previous step's converged transverse multiplier frozen for the step, and the Hessian is
     ``rho_t`` inside the cap and the regularized sliding metric outside it. The tissue receives the
     opposite force.
     """
@@ -345,7 +414,7 @@ def evaluate_suture_row(
 
     g = _barycentric_scalar(tet, bary, tet_indices, grip)
     m = _barycentric_scalar(tet, bary, tet_indices, mu)
-    cap = m * (wp.length(f_perp) + g * points.ds[i])
+    cap = m * (points.friction_transverse_weight * points.cap_normal[i] + g * points.ds[i])
     rho_t = points.rho_t[i]
     f_t = rho_t * slip + points.lam_t[i]
     t_outer = wp.outer(t, t)
@@ -495,7 +564,7 @@ def update_duals_suture_points(
     slip = wp.dot(t, (x - x_prev) - (p0 - p0_prev))
     g = _barycentric_scalar(tet, bary, tet_indices, grip)
     m = _barycentric_scalar(tet, bary, tet_indices, mu)
-    cap = m * (wp.length(lam) + g * points.ds[i])
+    cap = m * (points.friction_transverse_weight * points.cap_normal[i] + g * points.ds[i])
     points.lam_t[i] = wp.clamp(points.lam_t[i] + points.rho_t[i] * slip, -cap, cap)
 
 
@@ -592,6 +661,7 @@ def _append_suture_point(
     points.rho_t[i] = 0.0
     points.ds[i] = spacing
     points.stiffness[i] = wp.inf
+    points.cap_normal[i] = 0.0
     tunnel_point_count[slot] = count + 1
     return count + 1
 

@@ -54,12 +54,12 @@ PARAMS = {
     "needle_density": 7800.0,
     # thread
     "thread_radius": 1.5e-4,
-    "thread_length": 0.13,
+    "thread_length": 0.10,
     "thread_segment": 2.5e-3,
     "thread_density": 1100.0,
-    "thread_stretch_stiffness": 1.0e4,
+    "thread_stretch_stiffness": 2.0e3,
     "thread_bend_stiffness": 1.0e-6,
-    "clamp_position": (-0.110, 0.0, 0.030),
+    "clamp_position": (-0.0077, 0.0, 0.060),
     # holder drive
     "drive_linear_ke": 1.0e4,
     "drive_linear_kd": 1.0e2,
@@ -85,12 +85,40 @@ PARAMS = {
     "bite_angle_deg": 340.0,
     "center_high": 0.030,
     "center_bite": 0.014,
-    "pull_target": (0.030, 0.0, 0.050),
+    "pull_target": (0.008, 0.0, 0.060),
     # camera
     "camera_pos": (0.0, -0.16, 0.08),
     "camera_target": (0.0, 0.0, 0.015),
     "camera_fov": 30.0,
 }
+
+
+def _thread_polyline(start: wp.vec3, end: wp.vec3, length: float, segments: int) -> list[wp.vec3]:
+    """Points of a two-leg polyline of total ``length``: from ``start`` up along +z, then straight to ``end``."""
+    start_np = np.array([start[0], start[1], start[2]], dtype=np.float64)
+    end_np = np.array([end[0], end[1], end[2]], dtype=np.float64)
+    direct = float(np.linalg.norm(end_np - start_np))
+    if length <= direct + 1.0e-6:
+        raise ValueError("thread_length must exceed the distance from the needle tail to the clamp")
+    lo, hi = 0.0, length
+    for _ in range(60):
+        rise = 0.5 * (lo + hi)
+        knee = start_np + np.array([0.0, 0.0, rise])
+        if rise + float(np.linalg.norm(end_np - knee)) > length:
+            hi = rise
+        else:
+            lo = rise
+    knee = start_np + np.array([0.0, 0.0, lo])
+    leg2 = float(np.linalg.norm(end_np - knee))
+    result = []
+    for k in range(segments + 1):
+        s = length * k / segments
+        if s <= lo or leg2 <= 0.0:
+            q = start_np + np.array([0.0, 0.0, min(s, lo)])
+        else:
+            q = knee + (end_np - knee) * min((s - lo) / leg2, 1.0)
+        result.append(wp.vec3(*q))
+    return result
 
 
 def _needle_rotation(psi: float) -> wp.quat:
@@ -238,15 +266,17 @@ class Example:
             self.holder, self.needle, linear_axes=linear, angular_axes=angular, label="suture_holder_drive"
         )
 
-        # Thread: a straight rod leaving the tail toward the clamp behind the left block, nearly taut so
-        # it does not pile up under gravity before the bite.
+        # Thread: a rod from the tail straight up, then over to the clamp above the entry of the left
+        # block, so both thread ends rise above the wound once the bite is done (like a simple stitch).
         tail_local = points[-1]
         tail_world = wp.transform_point(wp.transform(center, rot0), tail_local)
         segments = int(round(p["thread_length"] / p["thread_segment"]))
-        to_clamp = wp.vec3(*p["clamp_position"]) - tail_world
-        rod = newton.Rod.create_straight(
-            tail_world, wp.normalize(to_clamp), p["thread_length"], segment_count=segments, radius=p["thread_radius"]
+        clamp_world = wp.vec3(*p["clamp_position"])
+        rod = newton.Rod(
+            points=_thread_polyline(tail_world, clamp_world, p["thread_length"], segments),
+            radius=p["thread_radius"],
         )
+        thread_dir = wp.vec3(0.0, 0.0, 1.0)
         thread_cfg = newton.ModelBuilder.ShapeConfig(density=p["thread_density"], mu=0.3)
         self.thread_bodies, _joints = builder.add_rod(
             rod=rod,
@@ -256,9 +286,7 @@ class Example:
             label="suture_thread",
         )
         half_seg = 0.5 * p["thread_length"] / segments
-        q_tail = newton.math.quat_between_vectors_robust(
-            wp.vec3(0.0, 0.0, 1.0), wp.quat_rotate_inv(rot0, wp.normalize(to_clamp))
-        )
+        q_tail = newton.math.quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), wp.quat_rotate_inv(rot0, thread_dir))
         builder.add_joint_rod(
             self.needle,
             self.thread_bodies[0],
@@ -268,7 +296,6 @@ class Example:
             bend_stiffness=p["thread_bend_stiffness"],
             label="suture_swage",
         )
-        clamp_world = tail_world + wp.normalize(to_clamp) * p["thread_length"]
         clamp = builder.add_body(xform=wp.transform(clamp_world, wp.quat_identity()), label="suture_clamp")
         builder.add_joint_fixed(
             clamp,

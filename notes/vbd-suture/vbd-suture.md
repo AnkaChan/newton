@@ -37,6 +37,7 @@ SolverVBD(model, *,                                            # keyword only (s
     suture_gate_slack: float = 1.0e-3,                         # added to r_gate [m]: needle radius + shape margin + soft_contact_gap + particle radius + slack (D7)
     suture_armed: bool = False,                                # True: the first tip contact punctures; False: force and angle test (D6)
     suture_closest_search_window: int = 1,                     # rod segments searched on each side of the cached segment per refresh (D14)
+    suture_friction_transverse_weight: float = 0.0,            # w in cap = mu (w |lambda_perp| + g ds); 1 = contact law, 0 = grip only (I14)
 )
 ```
 
@@ -125,7 +126,7 @@ _evaluate_suture_row(point, particle_q, particle_q_prev, body_q, body_q_prev, dt
     f_perp = k_eff * C + lambda_eff; H_perp = k_eff * P                              # on the rod; the tissue gets the opposite
     p0 = place (segment_start, u_start) at body_q; p0_prev = same place at body_q_prev
     slip = dot(t, (x - x_prev) - (p0 - p0_prev))                                     # tissue minus rod along the tangent since the step start
-    cap = mu * (|f_perp| + grip * ds)                                                # D3: transverse force plus grip
+    cap = mu * (w * cap_normal + grip * ds)                                          # D3 with I13 and I14: frozen previous-step multiplier, weight w (default 0)
     f_t = rho_t * slip + lambda_t
     if |f_t| > cap:
         H_t = cap * _regularized_coulomb_scale(|slip|, friction_epsilon * dt) * t t^T   # rigid_vbd_kernels.py:1107; sliding metric as 2052-2054
@@ -156,7 +157,7 @@ update_duals_suture_points(...):                                         # new; 
     for point in active points:
         C, slip computed as in _evaluate_suture_row at the current positions
         lambda = P * _alm_relaxed_ascent(lambda, C, stiffness, rho)      # rigid_vbd_kernels.py:145; bilateral, kept in the normal plane
-        cap = mu * (|lambda| + grip * ds)
+        cap = mu * (w * cap_normal + grip * ds)
         lambda_t = clamp(lambda_t + rho_t * slip, -cap, cap)             # the one-dimensional form of _compliant_contact_dual_step (rigid_vbd_kernels.py:1121)
 ```
 

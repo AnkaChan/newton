@@ -941,15 +941,20 @@ point and the rod material point fixed at the step start,
 
 .. math::
 
-   f_t = \operatorname{clamp}\big(\rho_t\, s + \lambda_t,\ \pm \mu\,(\lVert\mathbf{f}_\perp\rVert + g\,\Delta s)\big),
+   f_t = \operatorname{clamp}\big(\rho_t\, s + \lambda_t,\ \pm \mu\,(w\,N + g\,\Delta s)\big),
    \qquad
-   \lambda_t \leftarrow \operatorname{clamp}\big(\lambda_t + \rho_t\, s,\ \pm \mu\,(\lVert\boldsymbol{\lambda}_\perp\rVert + g\,\Delta s)\big),
+   \lambda_t \leftarrow \operatorname{clamp}\big(\lambda_t + \rho_t\, s,\ \pm \mu\,(w\,N + g\,\Delta s)\big),
 
-where :math:`\mu` is ``vbd.suture_mu`` and :math:`g` the grip force per unit
+where :math:`\mu` is ``vbd.suture_mu``, :math:`g` the grip force per unit
 tunnel length ``vbd.suture_grip`` [N/m], the radial pre-compression of tissue
-around a rod thinner than its hole. It enters only the cap: a thread of length
-:math:`L` inside tissue resists a pull of :math:`\mu g L` at zero side load
-(0.3 x 1 N/m x 15 mm = 4.5 mN). ``g = 0`` recovers the unchanged contact law.
+around a rod thinner than its hole, :math:`N` the transverse multiplier of the
+previous step frozen for the step, and :math:`w` the constructor argument
+``suture_friction_transverse_weight``. The grip enters only the cap: a thread
+of length :math:`L` inside tissue resists a pull of :math:`\mu g L` at zero
+side load (0.3 x 1 N/m x 15 mm = 4.5 mN). With :math:`w = 1` the cap is the
+body-body contact law; the default :math:`w = 0` bounds friction by the grip
+alone, because a cap that grows with the transverse multiplier feeds tissue
+shear back into itself and can drag tissue along a straight needle.
 
 **Contact gate.** Tissue particles within the gate radius of a tunnel polyline
 (needle radius + shape margin + ``soft_contact_gap`` + particle radius +

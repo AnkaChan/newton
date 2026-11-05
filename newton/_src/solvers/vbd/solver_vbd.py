@@ -523,6 +523,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         suture_gate_slack: float = 1.0e-3,  # Extra gate radius beyond needle radius + margin + gap + particle radius [m]
         suture_armed: bool = False,  # True: the first tip contact punctures; False: force and angle test
         suture_closest_search_window: int = 1,  # Rod segments searched on each side of the cached segment per refresh
+        suture_friction_transverse_weight: float = 0.0,  # Weight of the transverse multiplier in the friction cap (1 = contact law)
         deterministic: wp.DeterministicMode | None = None,
         enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
@@ -809,6 +810,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 surface normal.
             suture_closest_search_window: Number of rod segments searched on each side of a tunnel
                 point's cached segment when its closest place on the rod curve is refreshed.
+            suture_friction_transverse_weight: Weight ``w`` of the transverse multiplier in the tunnel
+                friction cap ``mu * (w * |lambda_perp| + g * ds)``. ``1`` is the body-body contact law
+                (friction bounded by the normal force); ``0`` (default) bounds friction by the tissue grip
+                alone. A positive weight feeds tissue shear back into the cap and can drag tissue along a
+                straight needle; see the solver page.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
@@ -1212,6 +1218,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             suture_gate_slack,
             suture_armed,
             suture_closest_search_window,
+            suture_friction_transverse_weight,
         )
 
         # Controls whether the next step() refreshes contact state derived from
@@ -3436,6 +3443,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         gate_slack: float,
         armed: bool,
         closest_search_window: int,
+        friction_transverse_weight: float,
     ) -> None:
         """Allocate the tunnel point rows and the needle state of every suture needle.
 
@@ -3446,6 +3454,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.suture_tunnel_update_interval = int(tunnel_update_interval)
         self.suture_armed = bool(armed)
         self.suture_closest_search_window = int(closest_search_window)
+        self.suture_friction_transverse_weight = float(friction_transverse_weight)
         self._suture_point_spacing = 0.0
         self._suture_gate_radius = np.zeros(0, dtype=np.float32)
         if self.suture_needle_count == 0:
@@ -3482,6 +3491,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._suture_point_rho_t = wp.zeros(total, dtype=wp.float32, device=device)
         self._suture_point_ds = wp.zeros(total, dtype=wp.float32, device=device)
         self._suture_point_stiffness = wp.full(total, float("inf"), dtype=wp.float32, device=device)
+        self._suture_point_cap_normal = wp.zeros(total, dtype=wp.float32, device=device)
 
         # Needle and tunnel state (chapter 2.5).
         self._suture_needle_state = wp.zeros(n, dtype=wp.int32, device=device)
@@ -3592,8 +3602,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         pts.rho_t = self._suture_point_rho_t
         pts.ds = self._suture_point_ds
         pts.stiffness = self._suture_point_stiffness
+        pts.cap_normal = self._suture_point_cap_normal
         pts.tunnel_capacity = tunnels
         pts.point_capacity = points
+        pts.friction_transverse_weight = self.suture_friction_transverse_weight
         self._suture_points = pts
         self._suture_point_total = total
 
@@ -3615,8 +3627,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._suture_points,
                 self._suture_rod,
                 self._suture_tet_indices(),
+                state_in.particle_q,
+                self.particle_q_prev,
                 model.particle_inv_mass,
                 model.particle_flags,
+                self.particle_adjacency,
+                model.tri_indices,
+                model.tri_poses,
+                model.tri_areas,
+                model.tri_materials,
+                model.edge_indices,
+                model.edge_rest_angle,
+                model.edge_rest_length,
+                model.edge_bending_properties,
+                model.tet_poses,
+                model.tet_materials,
                 state_in.body_q,
                 model.body_com,
                 model.body_inv_mass,
@@ -3702,6 +3727,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         _write(self._suture_point_lambda_t, [0.0] * count, np.float32)
         _write(self._suture_point_ds, [spacing] * count, np.float32)
         _write(self._suture_point_stiffness, [np.inf] * count, np.float32)
+        _write(self._suture_point_cap_normal, [0.0] * count, np.float32)
 
         tunnel_index = needle * self._suture_tunnel_capacity + tunnel
         host = self._suture_tunnel_state.numpy()
