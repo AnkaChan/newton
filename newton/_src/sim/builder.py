@@ -10,6 +10,7 @@ import ctypes
 import functools
 import gc
 import hashlib
+import itertools
 import logging
 import math
 import warnings
@@ -11424,7 +11425,7 @@ class ModelBuilder:
         for point in points:
             if not all(math.isfinite(c) for c in point):
                 raise ValueError(f"Suture needle centerline point must be finite, got {tuple(point)}")
-        for a, b in zip(points[:-1], points[1:]):
+        for a, b in itertools.pairwise(points):
             if wp.length(b - a) <= 1.0e-9:
                 raise ValueError("Suture needle centerline has two coincident consecutive points")
         if max_tunnels < 1 or max_points_per_tunnel < 1:
@@ -11441,7 +11442,7 @@ class ModelBuilder:
         needle_xform = self.body_q[needle_body]
         self.suture_needle_segment_start.append(len(self.suture_segment_body))
 
-        for a, b in zip(points[:-1], points[1:]):
+        for a, b in itertools.pairwise(points):
             self.suture_segment_body.append(int(needle_body))
             self.suture_segment_local_a.append(a)
             self.suture_segment_local_b.append(b)

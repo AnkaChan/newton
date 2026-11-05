@@ -32,3 +32,19 @@
 ## Decisions taken in review
 
 - 2026-11-05, Anka, chat (questions 1 to 13 of the grill-with-docs interview): all rows D1 to D13 above. The chapters are drafted from these decisions. Per R4 the implementation starts from the drafted chapters without a review round; later review comments are applied to the code and the chapters together.
+
+## Decisions taken during implementation (2026-11-05, Claude, recorded for Anka's review)
+
+| ID | Item | Decision |
+| --- | --- | --- |
+| I1 | Needle state semantics | The needle state is only "growing" or "not growing"; a tunnel that exited is THROUGH on its own. Reason: in the demo the tip enters block B while block A's tunnel still holds the needle, so a puncture must be allowed while earlier tunnels are fixed. Chapter 2 wrote OUTSIDE, PIERCING, THROUGH per needle; the code and CONTEXT.md now say OUTSIDE, PIERCING per needle and THROUGH per tunnel. |
+| I2 | D15 transverse rho | Plain inverse masses of the four vertices (no material reduction) for the first implementation; the row tests converge (residual under 0.1 mm in 20 steps). The material-reduced variant stays a fork. |
+| I3 | `custom_attributes` on `add_suture_needle` | Not implemented: it would need a new attribute frequency. The method takes `label` only. |
+| I4 | Tunnel point spacing tolerance | A point is appended at travel >= spacing x (1 - 1e-4) because float accumulation of 0.5 mm steps missed 1.5 mm by rounding. |
+| I5 | Removal rule 3 | Only forward tip motion (along the tip direction) grows the tunnel; retraction resets the travel and removes the last point once it lies more than one spacing behind the tip. |
+| I6 | Never-entered tunnel | A tunnel whose tip never entered the tissue and moved more than spacing + gate radius from its entry point is finished (open question 3 of chapter 2). |
+| I7 | Merge metadata | The suture lists use string frequencies "suture_needle" and "suture_segment" like the muscle lists; `suture_needle_segment_start` holds one start per needle in the builder and gets the total appended in `finalize`; `add_builder` rebuilds the group bits and the shape gate. |
+| I8 | Needles without tets | Allowed (the gate still works); such a needle can never puncture. |
+| I9 | Test helper `suture_set_points` | Creates a fixed (THROUGH) tunnel so the state machine leaves hand-set points alone. |
+| I10 | Graph capture test | Both runs warm up with one step before comparison: the solver's first step differs from later ones (contact state initialization), captured and plain runs then agree to the bit. |
+| I11 | Demo scale | `builder.rigid_gap = 1 mm`: the default 0.1 m pairs every thread capsule with every other capsule and overflows the per-body rigid contact buffer. |

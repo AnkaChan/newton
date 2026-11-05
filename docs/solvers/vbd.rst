@@ -883,6 +883,85 @@ budget per detection cycle. The motion that the truncation removes is called
 **DAT damping** here and in :ref:`Tuning VBD`. It is not related to any ``kd``
 damping coefficient.
 
+.. _vbd-suturing:
+
+Suturing
+~~~~~~~~
+
+A suture needle is a rigid body whose tip may pass through a tetrahedral soft
+body. :meth:`~newton.ModelBuilder.add_suture_needle` registers the needle body,
+its tip shape, its centerline (a polyline in the body frame, tip first) and the
+capsule bodies of its thread (the first element returned by
+:meth:`~newton.ModelBuilder.add_rod`) as one *rod curve*: the needle polyline
+followed by the thread polyline, one segment per rigid body. Every needle and
+thread shape receives the needle's *gate bit* in ``shape_contact_gate``.
+
+**Puncture.** Until a tunnel opens, the tip collides with tissue like any shape.
+At the end of every ``suture_tunnel_update_interval``-th substep the solver sums
+the tip shape's contact normal forces. When the sum exceeds the per-particle
+``vbd.suture_puncture_force`` while the tip direction is within the angle given
+by ``vbd.suture_puncture_cos`` of the inward surface normal (or at the first
+contact with ``suture_armed=True``), a tunnel opens with an entry point on the
+pierced face.
+
+**Tunnel points.** A tunnel is a chain of *tunnel points*, each stored as a tet
+index and four barycentric weights so it moves with the tissue. A device-side
+tet walk tracks the tip from tet to tet across face neighbors; a new point is
+appended after ``suture_point_spacing`` of forward travel (``None`` selects half
+the mean tet edge length, clamped to 0.5 to 2 mm), a point is removed when the
+tip retreats past it, and the exit point is placed when the walk leaves through
+a boundary face. The tunnel is then fixed. A puncture may open the next tunnel
+as soon as no tunnel is growing, so one needle sews several bodies in one
+stroke. A tunnel finishes when the free end of the thread has passed every
+point; it is never reused.
+
+**Rows.** Every active point carries one compliant-ALM row, the particle-body
+attachment row restricted to the two directions transverse to the rod tangent:
+with the barycentric point :math:`\mathbf{x}`, the closest place :math:`\mathbf{p}`
+on the rod curve, the tangent :math:`\mathbf{t}` and :math:`\mathbf{P} =
+\mathbf{1} - \mathbf{t}\mathbf{t}^{\mathsf T}`,
+
+.. math::
+
+   \mathbf{C} = \mathbf{P}\,(\mathbf{x} - \mathbf{p}),
+   \qquad
+   \mathbf{f}_\perp = k_{\text{eff}}\,\mathbf{C} + \boldsymbol{\lambda}_\perp,
+   \qquad
+   \boldsymbol{\lambda}_\perp \leftarrow \mathbf{P}\,(\boldsymbol{\lambda}_\perp + \rho\,\mathbf{C}),
+
+where the stiffness is infinite by default, so :math:`k_{\text{eff}} = \rho`
+with :math:`\rho` from the supports of the four vertices and the body, as for
+attachments. The force and the Hessian scatter to the tet vertices with weights
+:math:`w_i` and :math:`w_i^2` in the particle pass and act on the segment's body
+as a wrench in the rigid pass; the multipliers advance after both passes.
+
+**Friction.** Along the tangent the row applies the capped ALM friction of
+body-body contact in one dimension: with the slip :math:`s` between the tissue
+point and the rod material point fixed at the step start,
+
+.. math::
+
+   f_t = \operatorname{clamp}\big(\rho_t\, s + \lambda_t,\ \pm \mu\,(\lVert\mathbf{f}_\perp\rVert + g\,\Delta s)\big),
+   \qquad
+   \lambda_t \leftarrow \operatorname{clamp}\big(\lambda_t + \rho_t\, s,\ \pm \mu\,(\lVert\boldsymbol{\lambda}_\perp\rVert + g\,\Delta s)\big),
+
+where :math:`\mu` is ``vbd.suture_mu`` and :math:`g` the grip force per unit
+tunnel length ``vbd.suture_grip`` [N/m], the radial pre-compression of tissue
+around a rod thinner than its hole. It enters only the cap: a thread of length
+:math:`L` inside tissue resists a pull of :math:`\mu g L` at zero side load
+(0.3 x 1 N/m x 15 mm = 4.5 mN). ``g = 0`` recovers the unchanged contact law.
+
+**Contact gate.** Tissue particles within the gate radius of a tunnel polyline
+(needle radius + shape margin + ``soft_contact_gap`` + particle radius +
+``suture_gate_slack``) receive the needle's gate bit in
+``particle_contact_gate``. A rigid-soft record whose particle and shape share a
+bit is detected and stored as usual but produces no force, no dual update and
+no DAT plane. Every other pair keeps the penetration-free guarantee of
+:ref:`vbd-dat`.
+
+Example: :doc:`vbd_suture </examples>` sews two elastic cuboids with a half
+circle needle and tightens the thread.
+
 Examples
 --------
 

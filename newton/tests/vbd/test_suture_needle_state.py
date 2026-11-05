@@ -60,7 +60,11 @@ def _scene(
     needle = builder.add_body(xform=wp.transform(center, rot))
     # The body origin is the tip; the needle extends along local +z (upward), so the tip direction is -z.
     tip = builder.add_shape_capsule(
-        needle, xform=wp.transform(wp.vec3(0.0, 0.0, TIP_HALF_HEIGHT), wp.quat_identity()), radius=TIP_RADIUS, half_height=TIP_HALF_HEIGHT, cfg=cfg
+        needle,
+        xform=wp.transform(wp.vec3(0.0, 0.0, TIP_HALF_HEIGHT), wp.quat_identity()),
+        radius=TIP_RADIUS,
+        half_height=TIP_HALF_HEIGHT,
+        cfg=cfg,
     )
     shaft_half = 0.5 * (needle_length - 2.0 * TIP_HALF_HEIGHT)
     builder.add_shape_capsule(
@@ -71,7 +75,10 @@ def _scene(
         cfg=cfg,
     )
     builder.add_suture_needle(
-        needle, tip, centerline=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, needle_length)], max_points_per_tunnel=max_points
+        needle,
+        tip,
+        centerline=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, needle_length)],
+        max_points_per_tunnel=max_points,
     )
     builder.color()
     model = builder.finalize(skip_validation_inertia=True)
@@ -128,7 +135,7 @@ def _bary_of(model, state, tet, point):
 def test_puncture_requires_force_above_threshold(test, device):
     with wp.ScopedDevice(device):
         for force, expected in ((100.0, 0), (1.0e-4, 1)):
-            model, solver, s0, s1, control, needle = _scene(device, puncture_force=force)
+            _model, solver, s0, s1, control, needle = _scene(device, puncture_force=force)
             z0 = TOP + TIP_RADIUS + 1.0e-4
             s0, s1 = _drive(solver, s0, s1, control, needle, _descend(z0, z0 - 1.0e-3, 2.0e-4))
             test.assertEqual(int(solver.suture_needle_state()[0]), expected)
@@ -142,7 +149,7 @@ def test_puncture_requires_force_above_threshold(test, device):
 def test_puncture_requires_orientation(test, device):
     with wp.ScopedDevice(device):
         rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.deg2rad(80.0)))
-        model, solver, s0, s1, control, needle = _scene(device, puncture_force=1.0e-4, tip_rotation=rot)
+        _model, solver, s0, s1, control, needle = _scene(device, puncture_force=1.0e-4, tip_rotation=rot)
         z0 = TOP + TIP_RADIUS + 1.0e-4
         s0, s1 = _drive(solver, s0, s1, control, needle, _descend(z0, z0 - 1.0e-3, 2.0e-4, rot=rot))
         test.assertEqual(int(solver.suture_needle_state()[0]), 0)
@@ -150,7 +157,7 @@ def test_puncture_requires_orientation(test, device):
 
 def test_armed_mode_punctures_on_contact(test, device):
     with wp.ScopedDevice(device):
-        model, solver, s0, s1, control, needle = _scene(device, armed=True, puncture_force=100.0)
+        _model, solver, s0, s1, control, needle = _scene(device, armed=True, puncture_force=100.0)
         z0 = TOP + TIP_RADIUS + 1.0e-4
         s0, s1 = _drive(solver, s0, s1, control, needle, _descend(z0, z0 - 6.0e-4, 2.0e-4))
         test.assertEqual(int(solver.suture_needle_state()[0]), 1)
@@ -168,7 +175,7 @@ def test_tet_walk_appends_points_and_exits(test, device):
         test.assertLessEqual(abs(len(tets) - expected), 1)
         q = s0.particle_q.numpy()
         idx = model.tet_indices.numpy().reshape(-1, 4)
-        for tet, bary in zip(tets, barys):
+        for _tet, bary in zip(tets, barys, strict=False):
             test.assertTrue((bary >= -1.0e-5).all())
             np.testing.assert_allclose(bary.sum(), 1.0, atol=1.0e-5)
         last = sum(barys[-1][k] * q[idx[tets[-1]][k]] for k in range(4))
@@ -187,11 +194,16 @@ def test_retraction_removes_points(test, device):
         test.assertGreaterEqual(len(tets), 4)
         q = s0.particle_q.numpy()
         idx = model.tet_indices.numpy().reshape(-1, 4)
-        depths = np.array([TOP - sum(b[k] * q[idx[t]][k] for k in range(4))[2] for t, b in zip(tets, barys)])
+        depths = np.array(
+            [TOP - sum(b[k] * q[idx[t]][k] for k in range(4))[2] for t, b in zip(tets, barys, strict=False)]
+        )
         final_depth = 1.0e-3
         expected_removed = int((depths > final_depth + SPACING).sum())
         test.assertGreaterEqual(expected_removed, 2)
-        poses = [wp.transform(wp.vec3(0.5 * DIMS[0] * CELL, 0.5 * DIMS[1] * CELL, TOP - z), wp.quat_identity()) for z in np.arange(6.0e-3, final_depth - 1.0e-6, -5.0e-4)]
+        poses = [
+            wp.transform(wp.vec3(0.5 * DIMS[0] * CELL, 0.5 * DIMS[1] * CELL, TOP - z), wp.quat_identity())
+            for z in np.arange(6.0e-3, final_depth - 1.0e-6, -5.0e-4)
+        ]
         s0, s1 = _drive(solver, s0, s1, control, needle, poses)
         count_back = len(solver.suture_tunnel_points(0, 0)[0])
         test.assertEqual(len(tets) - count_back, expected_removed)
@@ -199,7 +211,7 @@ def test_retraction_removes_points(test, device):
 
 def test_rod_end_finishes_tunnel(test, device):
     with wp.ScopedDevice(device):
-        model, solver, s0, s1, control, needle = _scene(device, armed=True, needle_length=0.03)
+        _model, solver, s0, s1, control, needle = _scene(device, armed=True, needle_length=0.03)
         z0 = TOP + TIP_RADIUS + 1.0e-4
         s0, s1 = _drive(solver, s0, s1, control, needle, _descend(z0, -0.045, 5.0e-4))
         test.assertEqual(int(solver.suture_needle_state()[0]), 0)
@@ -225,7 +237,7 @@ def test_gate_bits_follow_the_tunnel(test, device):
 
 def test_point_capacity_sets_overflow(test, device):
     with wp.ScopedDevice(device):
-        model, solver, s0, s1, control, needle = _scene(device, armed=True, max_points=3)
+        _model, solver, s0, s1, control, needle = _scene(device, armed=True, max_points=3)
         z0 = TOP + TIP_RADIUS + 1.0e-4
         s0, s1 = _drive(solver, s0, s1, control, needle, _descend(z0, -2.0e-3, 5.0e-4))
         test.assertTrue(solver.suture_point_overflow())
@@ -234,7 +246,7 @@ def test_point_capacity_sets_overflow(test, device):
 
 def test_face_record_walk_start(test, device):
     with wp.ScopedDevice(device):
-        model, solver, s0, s1, control, needle = _scene(device, armed=True, full_surface=True)
+        _model, solver, s0, s1, control, needle = _scene(device, armed=True, full_surface=True)
         z0 = TOP + TIP_RADIUS + 1.0e-4
         s0, s1 = _drive(solver, s0, s1, control, needle, _descend(z0, TOP - 2.0e-3, 5.0e-4))
         test.assertEqual(int(solver.suture_needle_state()[0]), 1)

@@ -30,7 +30,9 @@ def _scene(device, *, particle_x, second_capsule=False, soft_contact_gap=0.0, da
     if second_capsule:
         other = builder.add_body(xform=wp.transform(wp.vec3(2.0 * particle_x, 0.0, 0.0), wp.quat_identity()))
         builder.add_shape_capsule(other, radius=CAPSULE_RADIUS, half_height=CAPSULE_HALF_HEIGHT, cfg=cfg)
-    builder.add_particle(pos=wp.vec3(particle_x, 0.0, 0.0), vel=wp.vec3(velocity_x, 0.0, 0.0), mass=1.0e-3, radius=PARTICLE_RADIUS)
+    builder.add_particle(
+        pos=wp.vec3(particle_x, 0.0, 0.0), vel=wp.vec3(velocity_x, 0.0, 0.0), mass=1.0e-3, radius=PARTICLE_RADIUS
+    )
     builder.color()
     model = builder.finalize(skip_validation_inertia=True)
     model.soft_contact_ke = 1.0e3
@@ -74,10 +76,14 @@ def test_gated_particle_receives_no_contact_force(test, device):
 
 def test_gate_is_per_pair(test, device):
     with wp.ScopedDevice(device):
-        model, pipeline, contacts, solver, state_0, state_1, control = _scene(device, particle_x=2.5e-3, second_capsule=True)
+        model, pipeline, contacts, solver, state_0, state_1, control = _scene(
+            device, particle_x=2.5e-3, second_capsule=True
+        )
         q_ungated = _step(model, pipeline, contacts, solver, state_0, state_1, control)
         test.assertLess(abs(q_ungated[0] - 2.5e-3), 1.0e-6)
-        model, pipeline, contacts, solver, state_0, state_1, control = _scene(device, particle_x=2.5e-3, second_capsule=True)
+        model, pipeline, contacts, solver, state_0, state_1, control = _scene(
+            device, particle_x=2.5e-3, second_capsule=True
+        )
         model.particle_contact_gate.assign(np.array([1], dtype=np.int32))
         q_gated = _step(model, pipeline, contacts, solver, state_0, state_1, control)
         test.assertLess(q_gated[0], 2.5e-3 - 1.0e-5)
@@ -106,7 +112,12 @@ class TestSutureGate(NewtonTestCase):
         self.allowOutputRegex(r"^Module .* load on device .*\n?", stream="stdout")
 
 
-add_function_test(TestSutureGate, "test_gated_particle_receives_no_contact_force", test_gated_particle_receives_no_contact_force, devices=devices)
+add_function_test(
+    TestSutureGate,
+    "test_gated_particle_receives_no_contact_force",
+    test_gated_particle_receives_no_contact_force,
+    devices=devices,
+)
 add_function_test(TestSutureGate, "test_gate_is_per_pair", test_gate_is_per_pair, devices=devices)
 add_function_test(TestSutureGate, "test_gated_pair_skips_dat", test_gated_pair_skips_dat, devices=devices)
 

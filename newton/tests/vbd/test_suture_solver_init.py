@@ -93,7 +93,9 @@ def test_suture_point_spacing_rule(test, device):
         model = _grid_model(device, cell=1.0e-2)
         test.assertAlmostEqual(SolverVBD(model, iterations=1)._suture_point_spacing, 2.0e-3, places=7)
         model = _grid_model(device, cell=3.0e-3)
-        test.assertAlmostEqual(SolverVBD(model, iterations=1, suture_point_spacing=1.0e-3)._suture_point_spacing, 1.0e-3, places=9)
+        test.assertAlmostEqual(
+            SolverVBD(model, iterations=1, suture_point_spacing=1.0e-3)._suture_point_spacing, 1.0e-3, places=9
+        )
 
 
 def _mean_edge(model):
@@ -112,10 +114,24 @@ class TestSutureSolverInit(NewtonTestCase):
         self.allowOutputRegex(r"^Module .* load on device .*\n?", stream="stdout")
 
 
-add_function_test(TestSutureSolverInit, "test_build_tet_neighbors_on_two_tets", test_build_tet_neighbors_on_two_tets, devices=devices)
-add_function_test(TestSutureSolverInit, "test_build_tet_neighbors_on_soft_grid", test_build_tet_neighbors_on_soft_grid, devices=devices)
-add_function_test(TestSutureSolverInit, "test_suture_solver_allocates_capacity", test_suture_solver_allocates_capacity, devices=devices)
-add_function_test(TestSutureSolverInit, "test_suture_point_spacing_rule", test_suture_point_spacing_rule, devices=devices)
+add_function_test(
+    TestSutureSolverInit, "test_build_tet_neighbors_on_two_tets", test_build_tet_neighbors_on_two_tets, devices=devices
+)
+add_function_test(
+    TestSutureSolverInit,
+    "test_build_tet_neighbors_on_soft_grid",
+    test_build_tet_neighbors_on_soft_grid,
+    devices=devices,
+)
+add_function_test(
+    TestSutureSolverInit,
+    "test_suture_solver_allocates_capacity",
+    test_suture_solver_allocates_capacity,
+    devices=devices,
+)
+add_function_test(
+    TestSutureSolverInit, "test_suture_point_spacing_rule", test_suture_point_spacing_rule, devices=devices
+)
 
 
 if __name__ == "__main__":

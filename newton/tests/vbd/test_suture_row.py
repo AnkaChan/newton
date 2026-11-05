@@ -91,18 +91,18 @@ def test_row_pulls_tissue_point_onto_kinematic_rod(test, device):
 
 def test_friction_cap_sticks_below_and_slides_above(test, device):
     with wp.ScopedDevice(device):
-        model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True)
+        _model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True)
         z0 = float(s0.body_q.numpy()[rod][2])
         state = _run(solver, s0, s1, control, steps=100, body_force=(0.0, 0.0, 1.0e-4), body=rod)
         test.assertLess(abs(float(state.body_q.numpy()[rod][2]) - z0), 1.0e-5)
-        model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True)
+        _model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True)
         state = _run(solver, s0, s1, control, steps=20, body_force=(0.0, 0.0, 1.0e-3), body=rod)
         test.assertGreater(abs(float(state.body_q.numpy()[rod][2]) - z0), 1.0e-4)
 
 
 def test_friction_zero_grip_slides_freely(test, device):
     with wp.ScopedDevice(device):
-        model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True, grip=0.0)
+        _model, solver, s0, s1, control, rod = _scene(device, tet_fixed=True, rod_dynamic=True, grip=0.0)
         z0 = float(s0.body_q.numpy()[rod][2])
         state = _run(solver, s0, s1, control, steps=20, body_force=(0.0, 0.0, 1.0e-4), body=rod)
         test.assertGreater(abs(float(state.body_q.numpy()[rod][2]) - z0), 1.0e-4)
@@ -125,10 +125,27 @@ class TestSutureRow(NewtonTestCase):
         self.allowOutputRegex(r"^Module .* load on device .*\n?", stream="stdout")
 
 
-add_function_test(TestSutureRow, "test_row_pulls_tissue_point_onto_kinematic_rod", test_row_pulls_tissue_point_onto_kinematic_rod, devices=devices)
-add_function_test(TestSutureRow, "test_friction_cap_sticks_below_and_slides_above", test_friction_cap_sticks_below_and_slides_above, devices=devices)
-add_function_test(TestSutureRow, "test_friction_zero_grip_slides_freely", test_friction_zero_grip_slides_freely, devices=devices)
-add_function_test(TestSutureRow, "test_transverse_multiplier_equals_side_load", test_transverse_multiplier_equals_side_load, devices=devices)
+add_function_test(
+    TestSutureRow,
+    "test_row_pulls_tissue_point_onto_kinematic_rod",
+    test_row_pulls_tissue_point_onto_kinematic_rod,
+    devices=devices,
+)
+add_function_test(
+    TestSutureRow,
+    "test_friction_cap_sticks_below_and_slides_above",
+    test_friction_cap_sticks_below_and_slides_above,
+    devices=devices,
+)
+add_function_test(
+    TestSutureRow, "test_friction_zero_grip_slides_freely", test_friction_zero_grip_slides_freely, devices=devices
+)
+add_function_test(
+    TestSutureRow,
+    "test_transverse_multiplier_equals_side_load",
+    test_transverse_multiplier_equals_side_load,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

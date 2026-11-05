@@ -227,7 +227,7 @@ Not arguments: the contact normal convention (the SDF gradient of the shape at t
 
 | Attribute | dtype, shape | Meaning |
 |---|---|---|
-| `_suture_needle_state` | int32 `[N]` | 0 OUTSIDE, 1 PIERCING, 2 THROUGH |
+| `_suture_needle_state` | int32 `[N]` | 0 OUTSIDE (no tunnel grows; the tip may puncture), 1 PIERCING (a tunnel grows). Changed 2026-11-05 (I1): a tunnel that exited is THROUGH on its own and the needle may puncture the next body at once |
 | `_suture_needle_tunnel` | int32 `[N]` | index `t` of the current tunnel, -1 when OUTSIDE |
 | `_suture_tunnel_count` | int32 `[N]` | tunnels opened so far; at most `T` |
 | `_suture_tunnel_state` | int32 `[N T]` | 0 unused, 1 PIERCING, 2 THROUGH, 3 FINISHED |
@@ -283,7 +283,7 @@ update_suture_needle_state(state):                                       # new; 
             while min(bary) < -eps and steps < 32:
                 face = index of the smallest bary; neighbor = _suture_tet_neighbors[tet, face]
                 if neighbor < 0:
-                    append point (tet, clamped bary); _suture_tunnel_state[n, t] = THROUGH; _suture_needle_state[n] = THROUGH   # rule 4: exit point
+                    append point (tet, clamped bary); _suture_tunnel_state[n, t] = THROUGH; _suture_needle_state[n] = OUTSIDE   # rule 4: exit point; the tip may puncture again (I1)
                     break
                 tet = neighbor; bary = barycentric(tip, tet); steps += 1
             if _suture_needle_state[n] == PIERCING:
@@ -295,9 +295,9 @@ update_suture_needle_state(state):                                       # new; 
                 if last is not the entry point and its place is the tip end (segment 0, u = 0) and |x_last - tip| > ds_tunnel:
                     remove last                                                                          # rule 3
             recompute ds of the last two points                                                          # half gaps
-        elif _suture_needle_state[n] == THROUGH:
-            if no point of tunnel t is active:
-                _suture_tunnel_state[n, t] = FINISHED; _suture_needle_state[n] = OUTSIDE; _suture_needle_tunnel[n] = -1   # rule 6
+        for tt in tunnels of n in state THROUGH:
+            if no point of tunnel tt is active:
+                _suture_tunnel_state[n, tt] = FINISHED                                                    # rule 6; the tunnel is never reused (I1)
         _suture_needle_last_tip[n] = tip; _suture_needle_tip_force[n] = 0; _suture_needle_tip_record[n] = -1
 
 update_suture_gate(state):                                               # new; one thread per particle

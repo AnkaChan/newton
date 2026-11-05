@@ -3,6 +3,7 @@
 
 """Authoring of a suture needle: segments, gate bits, tissue parameters and input checks."""
 
+import itertools
 import math
 import unittest
 
@@ -32,7 +33,7 @@ def _add_needle(builder, centerline):
     """Add a needle body with one capsule per centerline segment and a tip capsule; return (body, tip_shape, shapes)."""
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()))
     shapes = []
-    for a, b in zip(centerline[:-1], centerline[1:]):
+    for a, b in itertools.pairwise(centerline):
         mid = 0.5 * (a + b)
         d = b - a
         q = newton.math.quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), wp.normalize(d))
@@ -48,7 +49,9 @@ def _add_needle(builder, centerline):
 
 
 def _add_thread(builder, start, direction):
-    rod = newton.Rod.create_straight(start, direction, THREAD_LENGTH, segment_count=THREAD_SEGMENTS, radius=THREAD_RADIUS)
+    rod = newton.Rod.create_straight(
+        start, direction, THREAD_LENGTH, segment_count=THREAD_SEGMENTS, radius=THREAD_RADIUS
+    )
     bodies, _joints = builder.add_rod(rod=rod)
     return bodies
 
@@ -194,11 +197,30 @@ class TestSutureBuilder(NewtonTestCase):
         self.allowOutputRegex(r"^Module .* load on device .*\n?", stream="stdout")
 
 
-add_function_test(TestSutureBuilder, "test_add_suture_needle_segments_tip_first", test_add_suture_needle_segments_tip_first, devices=devices)
-add_function_test(TestSutureBuilder, "test_add_suture_needle_sets_shape_gate", test_add_suture_needle_sets_shape_gate, devices=devices)
-add_function_test(TestSutureBuilder, "test_add_suture_needle_custom_attribute_defaults", test_add_suture_needle_custom_attribute_defaults, devices=devices)
-add_function_test(TestSutureBuilder, "test_add_suture_needle_rejects_bad_input", test_add_suture_needle_rejects_bad_input, devices=devices)
-add_function_test(TestSutureBuilder, "test_add_builder_merges_suture_needles", test_add_builder_merges_suture_needles, devices=devices)
+add_function_test(
+    TestSutureBuilder,
+    "test_add_suture_needle_segments_tip_first",
+    test_add_suture_needle_segments_tip_first,
+    devices=devices,
+)
+add_function_test(
+    TestSutureBuilder, "test_add_suture_needle_sets_shape_gate", test_add_suture_needle_sets_shape_gate, devices=devices
+)
+add_function_test(
+    TestSutureBuilder,
+    "test_add_suture_needle_custom_attribute_defaults",
+    test_add_suture_needle_custom_attribute_defaults,
+    devices=devices,
+)
+add_function_test(
+    TestSutureBuilder,
+    "test_add_suture_needle_rejects_bad_input",
+    test_add_suture_needle_rejects_bad_input,
+    devices=devices,
+)
+add_function_test(
+    TestSutureBuilder, "test_add_builder_merges_suture_needles", test_add_builder_merges_suture_needles, devices=devices
+)
 
 
 if __name__ == "__main__":

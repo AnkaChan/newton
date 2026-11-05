@@ -134,7 +134,9 @@ def _barycentric_point(tet: int, bary: wp.vec4, tet_indices: wp.array2d[wp.int32
 
 
 @wp.func
-def _barycentric_scalar(tet: int, bary: wp.vec4, tet_indices: wp.array2d[wp.int32], values: wp.array[wp.float32]) -> float:
+def _barycentric_scalar(
+    tet: int, bary: wp.vec4, tet_indices: wp.array2d[wp.int32], values: wp.array[wp.float32]
+) -> float:
     return (
         bary[0] * values[tet_indices[tet, 0]]
         + bary[1] * values[tet_indices[tet, 1]]
@@ -433,7 +435,18 @@ def accumulate_suture_rows_per_body(
         if rod.segment_body[points.segment[i]] != body:
             continue
         force, hessian, p = evaluate_suture_row(
-            i, points, rod, tet_indices, particle_q, particle_q_prev, body_q, body_q_prev, grip, mu, friction_epsilon, dt
+            i,
+            points,
+            rod,
+            tet_indices,
+            particle_q,
+            particle_q_prev,
+            body_q,
+            body_q_prev,
+            grip,
+            mu,
+            friction_epsilon,
+            dt,
         )
         torque, h_al, h_aa = _point_force_to_body_torque_and_hessian(p - com_world, force, hessian)
         force_acc += force
@@ -501,9 +514,15 @@ def _tet_barycentric(tet: int, tet_indices: wp.array2d[wp.int32], q: wp.array[wp
     c = q[tet_indices[tet, 2]]
     d = q[tet_indices[tet, 3]]
     m = wp.mat33(
-        a[0] - d[0], b[0] - d[0], c[0] - d[0],
-        a[1] - d[1], b[1] - d[1], c[1] - d[1],
-        a[2] - d[2], b[2] - d[2], c[2] - d[2],
+        a[0] - d[0],
+        b[0] - d[0],
+        c[0] - d[0],
+        a[1] - d[1],
+        b[1] - d[1],
+        c[1] - d[1],
+        a[2] - d[2],
+        b[2] - d[2],
+        c[2] - d[2],
     )
     if wp.abs(wp.determinant(m)) < 1.0e-30:
         return wp.vec4(-1.0, -1.0, -1.0, -1.0)
@@ -657,7 +676,9 @@ def accumulate_suture_tip_force(
     collision_radius = radius + margin
     if collision_radius - distance <= 0.0:
         return
-    dE_dD, _d2 = _evaluate_rigid_soft_contact_force_norm(distance, collision_radius, contact_penalty_k[record], use_log_barrier)
+    dE_dD, _d2 = _evaluate_rigid_soft_contact_force_norm(
+        distance, collision_radius, contact_penalty_k[record], use_log_barrier
+    )
     f_n = -dE_dD
     if f_n <= 0.0:
         return
@@ -707,7 +728,9 @@ def update_suture_needle_state(
     xf = body_q[rod.needle_body[n]]
     tip = wp.transform_point(xf, rod.needle_tip_local[n])
     segment_lo = rod.needle_segment_start[n]
-    tip_dir = wp.normalize(_segment_world_place(segment_lo, 0.0, rod, body_q) - _segment_world_place(segment_lo, 1.0, rod, body_q))
+    tip_dir = wp.normalize(
+        _segment_world_place(segment_lo, 0.0, rod, body_q) - _segment_world_place(segment_lo, 1.0, rod, body_q)
+    )
     state = needle_state[n]
     t = needle_tunnel[n]
 
@@ -723,7 +746,10 @@ def update_suture_needle_state(
             if armed != 0:
                 punctured = tip_force[n] > 0.0
             else:
-                punctured = tip_force[n] >= puncture_force[particle] and wp.dot(tip_dir, soft_contact_normal[record]) >= puncture_cos[particle]
+                punctured = (
+                    tip_force[n] >= puncture_force[particle]
+                    and wp.dot(tip_dir, soft_contact_normal[record]) >= puncture_cos[particle]
+                )
         if punctured and tunnel_count[n] < wp.min(needle_max_tunnels[n], T):
             best_tet = int(-1)
             best_min = float(-1.0e30)
@@ -742,7 +768,16 @@ def update_suture_needle_state(
                 slot = n * T + t
                 tunnel_state[slot] = TUNNEL_PIERCING
                 tunnel_point_count[slot] = 0
-                _append_suture_point(slot, best_tet, _bary_clamp(best_bary), spacing, needle_max_points[n], points, tunnel_point_count, overflow)
+                _append_suture_point(
+                    slot,
+                    best_tet,
+                    _bary_clamp(best_bary),
+                    spacing,
+                    needle_max_points[n],
+                    points,
+                    tunnel_point_count,
+                    overflow,
+                )
                 needle_state[n] = SUTURE_PIERCING
                 needle_tunnel[n] = t
                 needle_entered[n] = 0
@@ -762,7 +797,16 @@ def update_suture_needle_state(
             neighbor = tet_neighbors[tet, face]
             if neighbor < 0:
                 if needle_entered[n] != 0:
-                    _append_suture_point(slot, tet, _bary_clamp(bary), spacing, needle_max_points[n], points, tunnel_point_count, overflow)
+                    _append_suture_point(
+                        slot,
+                        tet,
+                        _bary_clamp(bary),
+                        spacing,
+                        needle_max_points[n],
+                        points,
+                        tunnel_point_count,
+                        overflow,
+                    )
                     tunnel_state[slot] = TUNNEL_THROUGH
                     needle_state[n] = SUTURE_OUTSIDE  # the tunnel is fixed; the tip may open the next one
                     needle_tunnel[n] = -1
@@ -777,14 +821,21 @@ def update_suture_needle_state(
             if _bary_min(bary) >= -_WALK_EPS or needle_entered[n] != 0:
                 tip_tet[n] = tet
             if needle_entered[n] != 0:
+                # Net forward travel since the last point: backward jitter of a dynamic needle subtracts
+                # instead of resetting, so a held needle still reaches the spacing; retraction removes points below.
                 advance = wp.dot(tip - last_tip[n], tip_dir)
-                if advance > 0.0:
-                    # Only forward motion grows the tunnel; retraction removes points below.
-                    travel[n] = travel[n] + advance
-                else:
-                    travel[n] = 0.0
+                travel[n] = wp.max(travel[n] + advance, 0.0)
                 if travel[n] >= spacing * (1.0 - 1.0e-4):
-                    _append_suture_point(slot, tet, _bary_clamp(bary), spacing, needle_max_points[n], points, tunnel_point_count, overflow)
+                    _append_suture_point(
+                        slot,
+                        tet,
+                        _bary_clamp(bary),
+                        spacing,
+                        needle_max_points[n],
+                        points,
+                        tunnel_point_count,
+                        overflow,
+                    )
                     travel[n] = 0.0
                 count = tunnel_point_count[slot]
                 if count > 1:

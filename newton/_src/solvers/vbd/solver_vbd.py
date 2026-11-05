@@ -39,20 +39,6 @@ from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
-from .suture_kernels import (
-    SuturePointData,
-    SutureRodData,
-    accumulate_suture_row_force_and_hessian,
-    accumulate_suture_rows_per_body,
-    accumulate_suture_tip_force,
-    begin_suture_update,
-    build_tet_neighbors,
-    initialize_suture_points,
-    refresh_suture_points,
-    update_duals_suture_points,
-    update_suture_gate,
-    update_suture_needle_state,
-)
 from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
@@ -117,6 +103,20 @@ from .rigid_vbd_kernels import (
     update_duals_joint,
     update_duals_particle_body_attachments,
     update_rod_dahl_state,
+)
+from .suture_kernels import (
+    SuturePointData,
+    SutureRodData,
+    accumulate_suture_row_force_and_hessian,
+    accumulate_suture_rows_per_body,
+    accumulate_suture_tip_force,
+    begin_suture_update,
+    build_tet_neighbors,
+    initialize_suture_points,
+    refresh_suture_points,
+    update_duals_suture_points,
+    update_suture_gate,
+    update_suture_needle_state,
 )
 from .tendon_kernels import (
     TendonForceElementAdjacencyInfo,
@@ -518,7 +518,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
         # Suturing (experimental): suture needles authored with ModelBuilder.add_suture_needle
         suture_tunnel_update_interval: int = 1,  # Substeps between needle state updates
-        suture_point_spacing: float | None = None,  # Tunnel point spacing [m]; None = clamp(0.5 x mean tet edge, 0.5 mm, 2 mm)
+        suture_point_spacing: float
+        | None = None,  # Tunnel point spacing [m]; None = clamp(0.5 x mean tet edge, 0.5 mm, 2 mm)
         suture_gate_slack: float = 1.0e-3,  # Extra gate radius beyond needle radius + margin + gap + particle radius [m]
         suture_armed: bool = False,  # True: the first tip contact punctures; False: force and angle test
         suture_closest_search_window: int = 1,  # Rod segments searched on each side of the cached segment per refresh
@@ -3535,9 +3536,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         shape_gate = model.shape_contact_gate.numpy()
         shape_type = model.shape_type.numpy()
         shape_scale = model.shape_scale.numpy()
-        shape_margin = model.shape_margin.numpy() if model.shape_margin is not None and model.shape_margin.shape[0] > 0 else None
+        shape_margin = (
+            model.shape_margin.numpy() if model.shape_margin is not None and model.shape_margin.shape[0] > 0 else None
+        )
         groups = model.suture_needle_group.numpy()
-        gap = float(getattr(self.collision_pipeline, "soft_contact_gap", 0.0) or 0.0) if self.collision_pipeline is not None else 0.0
+        gap = (
+            float(getattr(self.collision_pipeline, "soft_contact_gap", 0.0) or 0.0)
+            if self.collision_pipeline is not None
+            else 0.0
+        )
         particle_radius = float(model.particle_radius.numpy().max()) if model.particle_count > 0 else 0.0
         radii = np.zeros(n, dtype=np.float32)
         for needle in range(n):
@@ -3697,9 +3704,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         _write(self._suture_point_stiffness, [np.inf] * count, np.float32)
 
         tunnel_index = needle * self._suture_tunnel_capacity + tunnel
-        host = self._suture_tunnel_state.numpy(); host[tunnel_index] = 2; self._suture_tunnel_state.assign(host)
-        host = self._suture_tunnel_point_count.numpy(); host[tunnel_index] = count; self._suture_tunnel_point_count.assign(host)
-        host = self._suture_tunnel_count.numpy(); host[needle] = max(int(host[needle]), tunnel + 1); self._suture_tunnel_count.assign(host)
+        host = self._suture_tunnel_state.numpy()
+        host[tunnel_index] = 2
+        self._suture_tunnel_state.assign(host)
+        host = self._suture_tunnel_point_count.numpy()
+        host[tunnel_index] = count
+        self._suture_tunnel_point_count.assign(host)
+        host = self._suture_tunnel_count.numpy()
+        host[needle] = max(int(host[needle]), tunnel + 1)
+        self._suture_tunnel_count.assign(host)
         self._refresh_suture_points(state)
 
     def _update_suture_needles(self, state: State, contacts: Contacts | None) -> None:
