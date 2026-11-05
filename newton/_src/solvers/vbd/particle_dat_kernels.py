@@ -236,7 +236,7 @@ def _build_contact_planes_kernel(
     trial: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     margin: float,
     refresh_normals: int,
     stride: int,
@@ -255,7 +255,6 @@ def _build_contact_planes_kernel(
     (``e1 < e2``); mirrored records are marked invalid.
     """
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
 
     ee_offsets = collision_info.edge_colliding_edges_offsets
     ee_count = ee_offsets[ee_offsets.shape[0] - 1]
@@ -370,7 +369,7 @@ def build_contact_planes(
     model,
     anchor: wp.array,
     trial: wp.array,
-    collision_info_array: wp.array,
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     *,
     margin: float,
@@ -388,7 +387,7 @@ def build_contact_planes(
             trial,
             model.tri_indices,
             model.edge_indices,
-            collision_info_array,
+            collision_info,
             float(margin),
             1 if refresh_normals else 0,
             launch_size,
@@ -404,7 +403,7 @@ def _truncate_against_contact_planes_kernel(
     trial: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     gamma: float,
     stride: int,
@@ -413,7 +412,6 @@ def _truncate_against_contact_planes_kernel(
     """Cap every vertex's fraction of ``trial - anchor`` so it stays on its side
     of every valid stored plane (atomic minimum into ``sigma``)."""
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
 
     ee_offsets = collision_info.edge_colliding_edges_offsets
     ee_count = ee_offsets[ee_offsets.shape[0] - 1]
@@ -461,7 +459,7 @@ def truncate_against_contact_planes(
     model,
     anchor: wp.array,
     trial: wp.array,
-    collision_info_array: wp.array,
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     *,
     gamma: float,
@@ -480,7 +478,7 @@ def truncate_against_contact_planes(
             trial,
             model.tri_indices,
             model.edge_indices,
-            collision_info_array,
+            collision_info,
             planes,
             float(gamma),
             launch_size,
@@ -949,7 +947,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     inv_mass: wp.array[float],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     alm: ParticleContactAlmState,
     stiffness: float,
@@ -977,7 +975,6 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     receives ``w * normal_force * n - w * friction_force`` and the Hessian
     ``w^2 (normal_stiffness n n^T + friction_jacobian)``."""
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
 
     ee_offsets = collision_info.edge_colliding_edges_offsets
     ee_count = ee_offsets[ee_offsets.shape[0] - 1]
@@ -1082,7 +1079,7 @@ def _update_alm_contact_multipliers_kernel(
     inv_mass: wp.array[float],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     stiffness: float,
     radius: float,
@@ -1100,7 +1097,6 @@ def _update_alm_contact_multipliers_kernel(
     ``pos`` (the trial pose), then its tangential multiplier by the capped friction
     trial using the new normal force as the Coulomb budget."""
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
 
     ee_offsets = collision_info.edge_colliding_edges_offsets
     ee_count = ee_offsets[ee_offsets.shape[0] - 1]
@@ -1217,7 +1213,7 @@ def accumulate_alm_contact_force_and_hessian(
     color: int,
     pos: wp.array,
     pos_prev: wp.array,
-    collision_info_array: wp.array,
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     alm: ParticleContactAlmState,
     *,
@@ -1248,7 +1244,7 @@ def accumulate_alm_contact_force_and_hessian(
             model.particle_inv_mass,
             model.tri_indices,
             model.edge_indices,
-            collision_info_array,
+            collision_info,
             planes,
             alm,
             float(stiffness),
@@ -1273,7 +1269,7 @@ def update_alm_contact_multipliers(
     dt: float,
     pos: wp.array,
     pos_prev: wp.array,
-    collision_info_array: wp.array,
+    collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     alm: ParticleContactAlmState,
     *,
@@ -1299,7 +1295,7 @@ def update_alm_contact_multipliers(
             model.particle_inv_mass,
             model.tri_indices,
             model.edge_indices,
-            collision_info_array,
+            collision_info,
             planes,
             float(stiffness),
             float(radius),

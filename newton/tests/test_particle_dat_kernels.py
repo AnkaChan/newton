@@ -9,7 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
+from newton._src.geometry.tri_mesh_collision import TriMeshCollisionDetector
 from newton._src.solvers.vbd.particle_dat_kernels import (
     build_contact_planes,
     commit_truncated_displacement,
@@ -136,8 +136,7 @@ def _detect(model, query_radius=0.03):
     detector.vertex_triangle_collision_detection(query_radius)
     detector.edge_edge_collision_detection(query_radius)
     info = detector.collision_info
-    info_array = wp.array([info], dtype=TriMeshCollisionInfo, device=model.device)
-    return detector, info, info_array
+    return detector, info
 
 
 def _plane_sides(model, info, planes, anchor, margin_tol=1.0e-6):
@@ -181,11 +180,11 @@ def _plane_sides(model, info, planes, anchor, margin_tol=1.0e-6):
 def test_build_contact_planes_certifies_every_stored_pair(test, device):
     """Build one certified plane per stored pair with the vertex side positive and only canonical edge records valid."""
     model = _two_layer_model(device)
-    _detector, info, info_array = _detect(model)
+    _detector, info = _detect(model)
     planes = create_particle_contact_dat_planes(info, device)
     anchor = wp.clone(model.particle_q)
     trial = wp.clone(model.particle_q)
-    build_contact_planes(model, anchor, trial, info_array, planes, margin=0.0, refresh_normals=True)
+    build_contact_planes(model, anchor, trial, info, planes, margin=0.0, refresh_normals=True)
     worst, checked = _plane_sides(model, info, planes, anchor)
     test.assertGreater(checked, 0)
     test.assertLessEqual(worst, 0.0)
@@ -199,18 +198,18 @@ def test_build_contact_planes_certifies_every_stored_pair(test, device):
 def test_truncate_against_planes_keeps_every_vertex_on_its_side(test, device):
     """Commit random displacements through the stored planes without any vertex crossing them."""
     model = _two_layer_model(device)
-    _detector, info, info_array = _detect(model)
+    _detector, info = _detect(model)
     planes = create_particle_contact_dat_planes(info, device)
     anchor = wp.clone(model.particle_q)
     rng = np.random.default_rng(3)
     trial_np = model.particle_q.numpy() + rng.uniform(-0.03, 0.03, size=(model.particle_count, 3)).astype(np.float32)
     trial = wp.array(trial_np, dtype=wp.vec3, device=device)
-    build_contact_planes(model, anchor, trial, info_array, planes, margin=0.0, refresh_normals=True)
+    build_contact_planes(model, anchor, trial, info, planes, margin=0.0, refresh_normals=True)
     # negative control: the untruncated trial pose does cross stored planes
     worst_trial, _checked = _plane_sides(model, info, planes, trial)
     test.assertGreater(worst_trial, 0.0)
     sigma = wp.zeros(model.particle_count, dtype=float, device=device)
-    truncate_against_contact_planes(model, anchor, trial, info_array, planes, gamma=0.85, sigma=sigma)
+    truncate_against_contact_planes(model, anchor, trial, info, planes, gamma=0.85, sigma=sigma)
     committed = wp.clone(anchor)
     commit_truncated_displacement(model.particle_q, anchor, trial, sigma, budget=1.0, anchor_out=committed)
     worst, checked = _plane_sides(model, info, planes, committed)
