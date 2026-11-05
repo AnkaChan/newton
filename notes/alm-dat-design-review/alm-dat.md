@@ -426,6 +426,8 @@ All names exist today: `_alm_contact_response` `particle_dat_kernels.py:908-951`
 | Damping law | none | gap-rate dashpot anchored at the margin crossing (today); penalty-style damping of the full rate | none |
 | Multiplier update cadence | none | once per sweep after all colours (today); per colour | none |
 | History key | none | sorted rows merged by counterpart index (today); hashed pair keys | none |
+| Normal metric floor | `particle_contact_alm_rho_floor_ratio` (1.0 today) and `particle_contact_alm_rho_scale` | floor at K (today): stops the resting-patch lateral drift (K/rho = 14) but drives the light gusset payloads (K/rho = 7,000) to non-finite multipliers; no floor, rho = inertia support as the host's contact rows: the gusset completes, the heavy patch drifts 12 to 47 cm in 4 s; rho from the particle's local support including its material Hessian, as the attachment rows do: not tried | resting patch (`notes/alm-dat-force-direction` on `ankac/alm-dat-main`, four runs) and the gusset traces (`notes/collision-benchmark-alm-dat/diagnostics/gusset8s_floor*.json`) |
+| Contact force direction | `particle_contact_alm_force_direction` (`closest_point` today) | closest-point direction, the penalty path's convention (Anka 2026-11-05: consistent with the old way); plane normal, the design-note variant. Measured: on the current separator both axes coincide for every resting row, both settle with the floor on and both drift with it off; the direction did not cause or fix the October drift | the same four runs |
 
 ### 3.8 Open questions for the reviewer
 
