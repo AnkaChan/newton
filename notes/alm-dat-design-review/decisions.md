@@ -25,4 +25,4 @@
 
 ## Decisions taken in review
 
-None yet.
+- 2026-11-05, Anka, chat, on the first draft: "the pseudo code is very unclear; the logic structure is bad. I am not asking you to make it more verbose! I want you to make the logic clear; add to the skill that `->` is not allowed; indent is only used for code blocks in controls such as if and for." Applied in round 1: the three pseudo-code blocks are rewritten as structured statements (one function per block, plain calls and assignments, indentation only for function and control bodies, no arrows). The skill `designing-through-pr-review` carries the rule from now on. Closes no fork.

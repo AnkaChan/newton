@@ -2,7 +2,7 @@
 
 - Purpose: describe the implemented `alm_dat` self-contact path of `SolverVBD` as design chapters, one per component, so the data structures and the pseudo code can be reviewed line by line before the code is touched again.
 - Inputs: `AnkaChan/newton` branch `ankac/alm-dat-design-review` at `119d9ba90` (the review worktree's solver code on one revision); Anka's step pseudocode of 2026-10-14 (`inputs/algorithm-reference.md`); the design note of 2026-09-14 (`inputs/design-note.md`); the conformance review of 2026-10-06 (`inputs/conformance-review.md`).
-- Pseudo code convention: a call tree of function names. Every name exists today and is cited; nothing in this document is new. Comments stand on their own line or after #. Control flow (for, if, else, return) is written out.
+- Pseudo code convention: structured statements with the real function names, read like Python. Every name exists today and is cited; nothing in this document is new. Only the body of a function and the body of a control statement (if, elif, else, for, while) are indented. Comments stand on their own line or after #.
 - Terms: `x_start` is the detection pose of the step; the `trial` is the untruncated VBD iterate; the `anchor` is the certified pose that only moves through plane truncation; a `slot` is one record of the detector's CSR rows; `P`, `E`, `T` are the particle, edge and triangle counts; `C_vt`, `C_ee` are the row capacities of the two pair families.
 - Status: chapters 1 to 3 drafted 2026-11-05 from the code. Nothing changes until the review closes.
 
@@ -96,49 +96,53 @@ Conventions reused from the host: the detection schedule is the solver-base slot
 ### 1.6 Pseudo code
 
 ```
-step(state_in, state_out, control, contacts, dt)                       # solver_vbd.py:2677
-  -> _validate_dat_collision_schedules        # alm_dat: SOFT_SELF_CONTACT must be PRE_INIT
-  -> _pre_initialization_detection(state_in, dt)
-     -> _refresh_collision_sets
-        -> _collision_detection_penetration_free(state_in)   # detector: vt and ee rows within margin + gap, sorted
-        -> particle_self_contact_info                        # refresh the device copy if the storage changed
-        -> _reset_dat_references                             # x_start = particle_q, displacement = 0
-  -> _initialize_particles(state_in, state_out, contacts, dt)
-     -> forward_step                           # particle_q_prev = x_start, displacement = inertial step
-     -> _alm_dat_initialize(state_in)
-        -> record_contact_coverage             # _dat_coverage from the overflow flags
-        anchor = x_start
-        -> _alm_dat_materialize_trial          # trial = x_start + displacement
-        vt_valid = ee_valid = 0                # slots were re-assigned by the detection
-        -> build_contact_planes(anchor, trial, refresh_normals = True)
-        -> match_contact_history               # multipliers from last step's sorted rows, zero otherwise
-        -> _alm_dat_truncate(trial)            # the inertial step is the first commit
-  for k in range(iterations):
-    -> _solve_particle_iteration(state_in, state_out, contacts, dt)
-       for color in particle_color_groups:
-         -> gather_particle_body_contact_force_and_hessian    # rigid-soft penalty, unchanged
-         -> accumulate_alm_contact_force_and_hessian(color, trial, particle_q_prev)   # chapter 3
-         -> local VBD solve of the color       # writes displacement
-         -> _alm_dat_materialize_trial         # trial = x_start + displacement, no truncation
-       -> update_alm_contact_multipliers(trial)   # once per sweep, after all colors
-       _alm_dat_iteration += 1
-       if plane_update_interval > 0 and _alm_dat_iteration % plane_update_interval == 0:
-         -> _alm_dat_truncate(trial)
-       state_out.particle_q = trial
-  -> _finalize_particles(state_out, dt)
-     for r in range(truncation_iterations):
-       -> _alm_dat_truncate(state_out.particle_q)
-     state_out.particle_q = anchor             # the committed state is the anchor
-     -> snapshot_contact_history               # rows and multipliers for the next step
-     -> update_velocity                        # (anchor - particle_q_prev) / dt
+step(state_in, state_out, control, contacts, dt):                        # solver_vbd.py:2677
+    _validate_dat_collision_schedules()               # alm_dat: the SOFT_SELF_CONTACT slot must be PRE_INIT
+    _pre_initialization_detection(state_in, dt)       # detect vt and ee rows within margin + gap; x_start = particle_q; displacement = 0
+    _initialize_particles(state_in, state_out, contacts, dt)
+    for k in range(iterations):
+        _solve_particle_iteration(state_in, state_out, contacts, dt)
+    _finalize_particles(state_out, dt)
 
-_alm_dat_truncate(trial, refresh_normals)                                 # solver_vbd.py:3403
-  -> truncate_against_contact_planes(anchor, trial, planes, gamma) -> sigma   # chapter 2
-  -> commit_truncated_displacement(x_start, anchor, trial, sigma, budget, rule)   # anchor moves
-  -> build_contact_planes(anchor, trial, refresh_normals)                       # planes at the new anchor
+_initialize_particles(state_in, state_out, contacts, dt):                # solver_vbd.py:3344
+    forward_step()                                    # particle_q_prev = x_start; displacement = inertial step
+    _alm_dat_initialize(state_in)
+
+_alm_dat_initialize(state_in):                                            # solver_vbd.py:3436
+    record_contact_coverage()                         # _dat_coverage = 0 if the detection dropped records
+    anchor = x_start
+    trial = _alm_dat_materialize_trial(state_in)      # trial = x_start + displacement
+    vt_valid = 0; ee_valid = 0                        # the detection re-assigned the slots
+    build_contact_planes(anchor, trial, refresh_normals = True)
+    match_contact_history()                           # multipliers from last step's sorted rows, else zero
+    _alm_dat_truncate(trial, refresh_normals = True)  # the inertial step is the first commit
+
+_solve_particle_iteration(state_in, state_out, contacts, dt):            # solver_vbd.py:4000
+    for color in particle_color_groups:
+        gather_particle_body_contact_force_and_hessian(color)            # rigid-soft penalty, unchanged
+        accumulate_alm_contact_force_and_hessian(color, trial, particle_q_prev)   # chapter 3
+        _tiled_elasticity_kernel(color)                                  # or solve_elasticity: the local solve writes displacement
+        trial = _alm_dat_materialize_trial(state_in)                     # no truncation of the trial
+    update_alm_contact_multipliers(trial)             # once per sweep, after all colors
+    _alm_dat_iteration += 1
+    if plane_update_interval > 0 and _alm_dat_iteration % plane_update_interval == 0:
+        _alm_dat_truncate(trial, refresh_normals = True)
+    state_out.particle_q = trial
+
+_finalize_particles(state_out, dt):                                       # solver_vbd.py:4725
+    for r in range(truncation_iterations):
+        _alm_dat_truncate(state_out.particle_q, refresh_normals = True)
+    state_out.particle_q = anchor                     # the committed state is the anchor
+    snapshot_contact_history()                        # rows and multipliers for the next step
+    update_velocity()                                 # (anchor - particle_q_prev) / dt
+
+_alm_dat_truncate(trial, refresh_normals):                                # solver_vbd.py:3403
+    sigma = truncate_against_contact_planes(anchor, trial, planes, gamma)           # chapter 2
+    anchor = commit_truncated_displacement(x_start, anchor, trial, sigma, budget, rule)
+    build_contact_planes(anchor, trial, refresh_normals)                              # planes at the new anchor
 ```
 
-All names exist today: `step` `solver_vbd.py:2677-2753`, `_alm_dat_initialize` `solver_vbd.py:3436-3457`, `_solve_particle_iteration` `solver_vbd.py:4000-4236`, `_finalize_particles` `solver_vbd.py:4725-4744`, `_alm_dat_truncate` `solver_vbd.py:3403-3434`. The local VBD solve of a colour is the tiled elasticity kernel or `solve_particle_iteration_kernel`, unchanged by this path.
+All names exist today: `step` `solver_vbd.py:2677-2753`, `_initialize_particles` `solver_vbd.py:3344-3386`, `_alm_dat_initialize` `solver_vbd.py:3436-3457`, `_solve_particle_iteration` `solver_vbd.py:4000-4236`, `_finalize_particles` `solver_vbd.py:4725-4744`, `_alm_dat_truncate` `solver_vbd.py:3403-3434`. The local solve of a colour is `_tiled_elasticity_kernel` or `solve_elasticity` (`solver_vbd.py:4135-4204`), unchanged by this path.
 
 ### 1.7 Forks
 
@@ -220,45 +224,59 @@ The planes above and `truncation_ts` (chapter 1) are the only storage. Per pair,
 ### 2.6 Pseudo code
 
 ```
-_build_contact_planes_kernel(anchor, trial, ..., margin, refresh_normals, planes)   # particle_dat_kernels.py:233
-  for slot in stored ee slots (strided):
-    if e1 < e2:                                      # canonical direction only
-      eps = -> dat_separation_epsilon(-> _coordinate_scale)
-      if refresh_normals or not ee_valid[slot]:
-        found, n = -> find_edge_edge_separator(anchor points, hint = stored n if valid)
-        if found: ee_valid[slot] = 1                 # else: keep the stored plane, or stay unconstrained
-      if ee_valid[slot]:
-        point, room, margin_eff = -> dat_plane_offset(n, e2 points, e2 remaining, e1 points, e1 remaining, margin, eps)
-        store n, point, margin_eff
+_build_contact_planes_kernel(anchor, trial, margin, refresh_normals, planes):   # particle_dat_kernels.py:233; one thread strides over slots
+    for slot in stored_ee_slots:
+        e1, e2 = pair(slot)
+        if e1 >= e2:                                  # mirrored record: no plane
+            ee_valid[slot] = 0
+            continue
+        eps = dat_separation_epsilon(_coordinate_scale(the four anchor points))
+        if refresh_normals or ee_valid[slot] == 0:
+            found, n = find_edge_edge_separator(anchor points, hint = stored normal if valid, eps)
+            if found:
+                ee_normal[slot] = n; ee_valid[slot] = 1       # not found: keep the stored plane, or stay unconstrained
+        if ee_valid[slot] == 1:
+            ee_point[slot], ee_margin[slot] = dat_plane_offset(n, e2 points, e2 remaining motion, e1 points, e1 remaining motion, margin, eps)
+    for slot in stored_vt_slots:
+        same steps with find_vertex_triangle_separator; triangle = negative side, vertex = positive side
+
+dat_plane_offset(n, negative, negative_disp, positive, positive_disp, margin, eps):   # particle_dat_kernels.py:66
+    gap = lowest positive height - highest negative height          # heights along n
+    margin_eff = min(max(margin, eps), gap / 2)
+    b_lo = highest negative height + margin_eff
+    b_hi = lowest positive height - margin_eff
+    if no vertex approaches the plane:
+        b = (b_lo + b_hi) / 2
+    elif only the negative side approaches:
+        b = b_hi
+    elif only the positive side approaches:
+        b = b_lo
     else:
-      ee_valid[slot] = 0
-  for slot in stored vt slots (strided):
-    same with -> find_vertex_triangle_separator, triangle = negative side, vertex = positive side
+        b = b_lo
+        for i in approaching negative vertices:
+            for j in approaching positive vertices:
+                b_ij = clamp(offset where vertex i and vertex j reach the plane at the same fraction, b_lo, b_hi)
+                if _dat_plane_room(b_ij) > _dat_plane_room(b):
+                    b = b_ij
+    return origin + b * n, _dat_plane_room(b), margin_eff
 
-dat_plane_offset(n, negative, negative_disp, positive, positive_disp, margin, eps)   # particle_dat_kernels.py:66
-  gap = min height of the positive side - max height of the negative side
-  margin_eff = min(max(margin, eps), gap / 2)
-  b_lo, b_hi = negative max + margin_eff, positive min - margin_eff
-  if nobody approaches:            b = midpoint(b_lo, b_hi)
-  elif only the negative side:     b = b_hi                    # give it all the room
-  elif only the positive side:     b = b_lo
-  else:
-    for each approaching (i on negative, j on positive):
-      b_ij = offset where the two slowest fractions are equal, clamped to [b_lo, b_hi]
-      keep the b_ij with the largest -> _dat_plane_room
-  return origin + b n, room, margin_eff
+_truncate_against_contact_planes_kernel(anchor, trial, planes, gamma, sigma):   # particle_dat_kernels.py:401
+    for slot in stored_ee_slots + stored_vt_slots:
+        if valid[slot] == 0:
+            continue
+        for v in positive side of the slot:
+            sigma[v] = min(sigma[v], planar_truncation_t(anchor[v], trial[v] - anchor[v], +n, p, gamma, m))   # atomic
+        for v in negative side of the slot:
+            sigma[v] = min(sigma[v], planar_truncation_t(anchor[v], trial[v] - anchor[v], -n, p, gamma, m))   # atomic
 
-_truncate_against_contact_planes_kernel(anchor, trial, ..., planes, gamma, sigma)   # particle_dat_kernels.py:401
-  for slot in stored ee slots, then vt slots (strided):
-    if valid:
-      for each vertex of the positive side:  t = -> planar_truncation_t(anchor, trial - anchor, +n, p, gamma, m); atomic_min(sigma)
-      for each vertex of the negative side:  t = -> planar_truncation_t(anchor, trial - anchor, -n, p, gamma, m); atomic_min(sigma)
-
-_commit_truncated_displacement_kernel(x_start, anchor, trial, sigma, budget, rule)   # particle_dat_kernels.py:517
-  step = sigma * (trial - anchor); offset = anchor - x_start
-  if rule is distance: step *= -> budget_sphere_fraction(offset, step, budget)      # end point inside the sphere
-  else: if |offset| + |step| > budget: step *= max(budget - |offset|, 0) / |step|  # path length
-  anchor_out = anchor + step
+_commit_truncated_displacement_kernel(x_start, anchor, trial, sigma, budget, rule):   # particle_dat_kernels.py:517; one thread per vertex
+    step = sigma * (trial - anchor)
+    offset = anchor - x_start
+    if rule == distance:
+        step = step * budget_sphere_fraction(offset, step, budget)      # end point inside the budget sphere
+    elif |offset| + |step| > budget:
+        step = step * max(budget - |offset|, 0) / |step|                # path length
+    anchor_out = anchor + step
 ```
 
 All names exist today: `_build_contact_planes_kernel` `particle_dat_kernels.py:233-366`, `dat_plane_offset` `particle_dat_kernels.py:66-179`, `_dat_plane_room` `particle_dat_kernels.py:36-63`, `_truncate_against_contact_planes_kernel` `particle_dat_kernels.py:401-457`, `_commit_truncated_displacement_kernel` `particle_dat_kernels.py:517-546`, `budget_sphere_fraction` `particle_dat_kernels.py:493-514`, `planar_truncation_t` `rigid_vbd_kernels.py:7277-7308`.
@@ -344,41 +362,52 @@ The struct above is the only storage of this component. Per slot, the kernels de
 ### 3.6 Pseudo code
 
 ```
-_accumulate_alm_contact_force_and_hessian_kernel(dt, color, pos = trial, pos_prev, ..., planes, alm, ...)   # particle_dat_kernels.py:954
-  for slot in stored ee slots, then vt slots (strided):
-    if valid[slot]:
-      n, gap, weights, rho_inertia, rel = -> _edge_edge_row_geometry | _vertex_triangle_row_geometry(slot, pos, pos_prev, n_stored)
-      F_n, k_n, f_t, J_t, transmitted = -> _alm_contact_response(gap, rel, n, lam[slot], lambda_t[slot], rho_inertia, ...)
-      if F_n > 0 or k_n > 0 or f_t != 0:
-        for each vertex v of the pair with signed weight w:
-          if color[v] == color:
-            atomic_add(particle_forces[v],   w F_n n - w f_t)
-            atomic_add(particle_hessians[v], w^2 (k_n n n^T + J_t))
+_accumulate_alm_contact_force_and_hessian_kernel(dt, color, trial, particle_q_prev, planes, alm, ...):   # particle_dat_kernels.py:954
+    for slot in stored_ee_slots + stored_vt_slots:
+        if valid[slot] == 0:
+            continue
+        n, gap, weights, rho_inertia, rel = _edge_edge_row_geometry or _vertex_triangle_row_geometry(slot, trial, particle_q_prev, stored normal)
+        F_n, k_n, f_t, J_t, transmitted = _alm_contact_response(gap, rel, n, lam[slot], lambda_t[slot], rho_inertia, ...)
+        if F_n == 0 and k_n == 0 and f_t == 0:
+            continue
+        for v, w in vertices of the slot with their signed weights:    # vertex +1, triangle -bary; e1 (1-s, s), e2 -(1-t), -t
+            if particle_colors[v] == color:
+                particle_forces[v] += w * F_n * n - w * f_t             # atomic
+                particle_hessians[v] += w * w * (k_n * n n^T + J_t)     # atomic
 
-_alm_contact_response(gap, rel, n, lam, lambda_t, rho_inertia, dt, K, R_total, ..., hard_gap, band, wall_ratio, kd, mu)   # particle_dat_kernels.py:908
-  rho = -> contact_alm_rho(rho_inertia, K, rho_scale, floor_ratio)
-  transmitted, k = -> alm_contact_row_smooth(gap - hard_gap, lam, K, R_total - hard_gap, rho, band, wall_ratio)
-     if band <= 0: return -> alm_contact_row                   # piecewise law
-     if gap' - lam / rho >= R': return 0, 0                    # released
-     if cushion force at z = 0 < lam - rho gap': return max(lam - rho gap', 0), rho    # wall
-     z = root of F(z) = lam + rho (z - gap') by clamped Newton  # cushion
-     return F(z), K(z) rho / (K(z) + rho)
-  F_damp, k_damp = -> contact_damping_row(gap, n . rel, kd, R_total, dt)   # closing motion inside the margin only
-  if mu > 0 and transmitted > 0:
-    f_t, J_t = -> alm_friction_row(lambda_t, rho_inertia rho_scale, rel, n, mu transmitted)   # disk clamp
-  return transmitted + F_damp, k + k_damp, f_t, J_t, transmitted
+_alm_contact_response(gap, rel, n, lam, lambda_t, rho_inertia, dt, K, R, rho_scale, floor, hard_gap, band, wall_ratio, kd, mu):   # particle_dat_kernels.py:908
+    rho = contact_alm_rho(rho_inertia, K, rho_scale, floor)             # max(rho_inertia * rho_scale, floor * K)
+    transmitted, k = alm_contact_row_smooth(gap - hard_gap, lam, K, R - hard_gap, rho, band, wall_ratio)
+    F_damp, k_damp = contact_damping_row(gap, dot(n, rel), kd, R, dt)   # closing motion inside the margin only
+    f_t = 0; J_t = 0
+    if mu > 0 and transmitted > 0:
+        f_t, J_t = alm_friction_row(lambda_t, rho_inertia * rho_scale, rel, n, mu * transmitted)   # disk clamp
+    return transmitted + F_damp, k + k_damp, f_t, J_t, transmitted
 
-_update_alm_contact_multipliers_kernel(dt, pos = trial, pos_prev, ..., planes, ..., alm)   # particle_dat_kernels.py:1089
-  for slot in stored ee slots, then vt slots (strided):
-    if valid[slot]:
-      geometry as above at the trial
-      lam[slot]      = transmitted force of -> alm_contact_row_smooth      # the dual eats the attempt
-      lambda_t[slot] = clamped trial of -> alm_friction_row with budget mu lam[slot]
+alm_contact_row(gap, lam, K, R, rho):                                    # particle_dat_kernels.py:614; alm_contact_row_smooth with band = 0
+    if gap - lam / rho >= R:
+        return 0, 0                                                      # released
+    z = (K * R - lam + rho * gap) / (K + rho)                            # unconstrained slack
+    if z >= 0:
+        return max(K / (K + rho) * lam + K * rho / (K + rho) * (R - gap), 0), K * rho / (K + rho)   # cushion
+    return max(lam - rho * gap, 0), rho                                  # hard wall
 
-match_contact_history(info, alm)                                 # particle_dat_kernels.py:1332, after each detection
-  for family in (vt, ee): -> _match_rows_kernel per element      # merge sorted rows; equal counterpart carries lam, lambda_t; else 0
-snapshot_contact_history(info, alm)                              # particle_dat_kernels.py:1368, at the step end
-  for family in (vt, ee): -> _snapshot_rows_kernel per element   # copy offsets, counterparts and multipliers
+_update_alm_contact_multipliers_kernel(dt, trial, particle_q_prev, planes, alm, ...):   # particle_dat_kernels.py:1089
+    for slot in stored_ee_slots + stored_vt_slots:
+        if valid[slot] == 0:
+            continue
+        n, gap, weights, rho_inertia, rel = row geometry as above at the trial
+        rho = contact_alm_rho(rho_inertia, K, rho_scale, floor)
+        lam[slot], k = alm_contact_row_smooth(gap - hard_gap, lam[slot], K, R - hard_gap, rho, band, wall_ratio)   # the dual eats the attempt
+        lambda_t[slot], J_t = alm_friction_row(lambda_t[slot], rho_inertia * rho_scale, rel, n, mu * lam[slot])
+
+match_contact_history(info, alm):                                        # particle_dat_kernels.py:1332; after each detection
+    for family in (vt, ee):
+        _match_rows_kernel(family)      # per element: merge last and current sorted rows; an equal counterpart keeps lam and lambda_t, others start at zero
+
+snapshot_contact_history(info, alm):                                     # particle_dat_kernels.py:1368; at the step end
+    for family in (vt, ee):
+        _snapshot_rows_kernel(family)   # copy offsets, counterparts and multipliers into the prev_* arrays
 ```
 
 All names exist today: `_alm_contact_response` `particle_dat_kernels.py:908-951`, `alm_contact_row` `particle_dat_kernels.py:614-644`, `alm_contact_row_smooth` `particle_dat_kernels.py:669-705`, `cushion_force` `particle_dat_kernels.py:647-666`, `contact_damping_row` `particle_dat_kernels.py:734-754`, `alm_friction_row` `particle_dat_kernels.py:708-731`, `_match_rows_kernel` `particle_dat_kernels.py:1172-1199`, `_snapshot_rows_kernel` `particle_dat_kernels.py:1202-1223`.
