@@ -890,6 +890,21 @@ add_example_test(
     use_viewer=True,
     test_suffix="finger_mesh",
 )
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_rest_on_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_rest_on_contact",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "contact-method": "alm_dat"},
+    use_viewer=True,
+    test_suffix="alm_dat",
+)
 
 
 class TestRobotExamples(unittest.TestCase):
