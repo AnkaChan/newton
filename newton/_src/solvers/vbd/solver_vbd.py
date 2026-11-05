@@ -503,7 +503,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_contact_alm_hard_gap: float | None = None,
         particle_contact_alm_transition_band: float = 0.0,
         particle_contact_alm_wall_stiffness_ratio: float = 9.0,
-        particle_contact_alm_force_direction: str = "closest_point",
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -654,11 +653,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 transition band, the wall stiffness as a multiple of the row's ALM
                 metric ``rho``. The in-sweep stiffness at the wall is then within
                 ``rho / (ratio + 1)`` of the hard-regime value ``rho``. Defaults to ``9``.
-            particle_contact_alm_force_direction: With ``"alm_dat"``, the axis of the contact
-                row's force and gap. ``"closest_point"`` (default): the closest-point direction
-                between the two primitives, as the penalty path uses; the stored plane normal only
-                fixes the sign. ``"plane_normal"``: the stored division-plane normal itself, the
-                design-note variant. Ablation switch (design review fork, 2026-11-05).
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -1256,12 +1250,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
         self.particle_contact_alm_transition_band = float(particle_contact_alm_transition_band)
         self.particle_contact_alm_wall_stiffness_ratio = float(particle_contact_alm_wall_stiffness_ratio)
-        if particle_contact_alm_force_direction not in ("closest_point", "plane_normal"):
-            raise ValueError(
-                "particle_contact_alm_force_direction must be 'closest_point' or 'plane_normal', "
-                f"got {particle_contact_alm_force_direction!r}"
-            )
-        self.particle_contact_alm_force_direction = particle_contact_alm_force_direction
         if self._alm_dat and particle_dat_truncation_iterations < 1:
             raise ValueError(
                 "particle_dat_truncation_iterations must be at least 1 with alm_dat: the committed state is the "
@@ -4938,7 +4926,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     damping=self.model.soft_contact_kd,
                     friction_mu=self.model.soft_contact_mu,
                     parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
-                    force_along_plane_normal=self.particle_contact_alm_force_direction == "plane_normal",
                     launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
                     particle_forces=self.particle_forces,
                     particle_hessians=self.particle_hessians,
@@ -5060,7 +5047,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 wall_stiffness_ratio=self.particle_contact_alm_wall_stiffness_ratio,
                 friction_mu=self.model.soft_contact_mu,
                 parallel_eps=self._self_contact_edge_edge_parallel_epsilon,
-                force_along_plane_normal=self.particle_contact_alm_force_direction == "plane_normal",
                 launch_size=self.particle_self_contact_evaluation_kernel_launch_size,
             )
             self._alm_dat_iteration += 1
