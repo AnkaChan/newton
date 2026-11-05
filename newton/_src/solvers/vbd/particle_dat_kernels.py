@@ -521,28 +521,21 @@ def _commit_truncated_displacement_kernel(
     trial: wp.array[wp.vec3],
     sigma: wp.array[float],
     budget: float,
-    distance_rule: int,
     anchor_out: wp.array[wp.vec3],
 ):
-    """Advance the anchor by ``sigma`` of the remaining displacement, keeping the
-    total displacement from ``x_start`` within the motion budget.
+    """Advance the anchor by ``sigma`` of the remaining displacement, keeping its
+    end point within the motion budget of ``x_start``.
 
-    ``distance_rule == 0`` (path length): the distance already travelled plus the
-    step must fit the budget, so a vertex that has spent its budget stays put, even
-    for a step back toward ``x_start``. ``distance_rule == 1`` (distance): the step's
-    end point must lie within the budget of ``x_start``; a step that leaves the
-    budget sphere is cut at the sphere, a step back inside is admitted whole.
+    The budget is the same clamp as the penalty DAT path applies to the accumulated
+    displacement (``apply_truncation_ts``): only the distance from the detection pose
+    counts. A step whose end point stays inside the budget sphere is admitted whole,
+    so a correction back toward ``x_start`` is always possible; a step that leaves the
+    sphere is cut at the sphere.
     """
     i = wp.tid()
     step = sigma[i] * (trial[i] - anchor[i])
     offset = anchor[i] - x_start[i]
-    if distance_rule == 1:
-        step = step * budget_sphere_fraction(offset, step, budget)
-    else:
-        step_length = wp.length(step)
-        used = wp.length(offset)
-        if used + step_length > budget and step_length > 0.0:
-            step = step * (wp.max(budget - used, 0.0) / step_length)
+    step = step * budget_sphere_fraction(offset, step, budget)
     anchor_out[i] = anchor[i] + step
 
 
@@ -554,17 +547,12 @@ def commit_truncated_displacement(
     *,
     budget: float,
     anchor_out: wp.array,
-    distance_rule: bool = False,
 ) -> None:
-    """Launch :func:`_commit_truncated_displacement_kernel` over all particles.
-
-    ``distance_rule`` selects the distance rule of the motion budget (end point
-    within the budget of ``x_start``) instead of the default path-length rule.
-    """
+    """Launch :func:`_commit_truncated_displacement_kernel` over all particles."""
     wp.launch(
         _commit_truncated_displacement_kernel,
         dim=anchor.shape[0],
-        inputs=[x_start, anchor, trial, sigma, float(budget), 1 if distance_rule else 0],
+        inputs=[x_start, anchor, trial, sigma, float(budget)],
         outputs=[anchor_out],
         device=anchor.device,
     )

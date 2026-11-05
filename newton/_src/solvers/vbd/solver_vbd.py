@@ -497,7 +497,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_self_contact_method: str = "penalty_dat",
         particle_dat_plane_update_interval: int = 1,
         particle_dat_truncation_iterations: int = 2,
-        particle_dat_budget_rule: str = "path_length",
         particle_contact_alm_rho_scale: float = 1.0,
         particle_contact_alm_rho_floor_ratio: float = 1.0,
         particle_contact_alm_hard_gap: float | None = None,
@@ -625,16 +624,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_dat_truncation_iterations: With ``"alm_dat"``, number of
                 truncate-and-rebuild rounds applied to the final iterate before the
                 step commits. Defaults to ``2``.
-            particle_dat_budget_rule: With ``"alm_dat"``, how the motion budget bounds the
-                committed displacement from the detection pose. ``"path_length"``
-                (default) admits a commit only while the distance already travelled plus
-                the new step fits the budget, so a vertex that has spent its budget cannot
-                move again before the next detection, not even back toward the detection
-                pose. ``"distance"`` admits any commit whose end point stays within the
-                budget of the detection pose and cuts a commit that leaves the budget
-                sphere at the sphere, so corrections back toward the detection pose stay
-                possible. Both rules keep the committed state within the certified reach
-                of the stored planes.
             particle_contact_alm_rho_scale: With ``"alm_dat"``, positive multiplier on the
                 contact rows' inertia-derived ALM metric. Larger values move the row
                 toward a penalty response within a sweep (faster, stiffer) without
@@ -1263,11 +1252,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "particle_dat_truncation_iterations must be at least 1 with alm_dat: the committed state is the "
                 "truncated iterate, so the final truncation cannot be skipped"
             )
-        if particle_dat_budget_rule not in ("path_length", "distance"):
-            raise ValueError(
-                f"particle_dat_budget_rule must be 'path_length' or 'distance', got {particle_dat_budget_rule!r}"
-            )
-        self.particle_dat_budget_rule = particle_dat_budget_rule
         # thickness reserved on each side of a stored plane; the certificate is "no crossing"
         self._dat_margin = 0.0
         self._dat_planes = None
@@ -4129,7 +4113,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.truncation_ts,
             budget=self._alm_dat_budget(),
             anchor_out=self._dat_anchor,
-            distance_rule=self.particle_dat_budget_rule == "distance",
         )
         build_contact_planes(
             self.model,

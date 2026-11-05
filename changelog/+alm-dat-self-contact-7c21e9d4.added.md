@@ -6,5 +6,7 @@ contact multipliers across steps by matching the detector's sorted rows, and
 truncates the accumulated motion against the stored planes at a fixed cadence
 (``particle_dat_plane_update_interval``) and once more before the step commits
 (``particle_dat_truncation_iterations``). The default ``"penalty_dat"`` path is
-unchanged. ``alm_dat`` requires one self-contact detection per step and does
-not yet include friction, damping, or rigid-soft DAT.
+unchanged. The contact row includes gap-rate damping (``soft_contact_kd``) and
+Coulomb friction (``soft_contact_mu``) as a tangential multiplier capped by the
+normal force. ``alm_dat`` requires one self-contact detection per step and does
+not yet include rigid-soft DAT.
