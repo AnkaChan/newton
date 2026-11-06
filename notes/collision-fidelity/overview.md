@@ -6,7 +6,7 @@
 - Purpose: review how the benchmark builds scenes, measures contact, and reports results.
 - Inputs: Newton at `32ef532f7ffc62ffa0688826583d72496df4604b`; [catalog digest](inputs/catalog.md); [requirements and decisions](decisions.md).
 - Pseudo code: real names, plain conditions, explicit loops. Indentation marks function and control bodies only.
-- Status: chapter 1 refreshed on 2026-11-06 after the small review fixes. This describes the existing draft implementation in [upstream PR #5144](https://github.com/newton-physics/newton/pull/5144). Full-run opt-in and lower-is-better ASV measures are approved but not implemented; Overall Pass rules remain open.
+- Status: chapter 1 refreshed on 2026-11-06 after the small review fixes. This describes the existing draft implementation in [upstream PR #5144](https://github.com/newton-physics/newton/pull/5144). Full-run opt-in and lower-is-better ASV measures are approved but not implemented. Missing Overall Pass rules are deferred. Optional video recording and review are requested in R10.
 
 ## 1.1 Intent
 
@@ -202,10 +202,11 @@ The ASV cache calls the runner once; its tracks read this result (`asv/benchmark
 | Run length | `profile` | `smoke`: at most 1 s; `full`: complete schedule and declared long hold. | Same selected case; coverage stays visible. |
 | Full ASV workload | explicit opt-in approved; Anka, chat, 2026-11-06 | Unfiltered runs must skip full cases. Implementation and runtime measurement remain pending. | Full selected cases; no shortened hold presented as equivalent. |
 | ASV status direction | closed; Anka, chat, 2026-11-06; implementation pending | Use failure rate, per-case failure flags, and missing coverage. Preserve unknown results and rate denominators; see D6 in decisions.md. | Same cached result; no new physical measurement or ASV extension. |
-| Positive checks and limits | pending | Define positive task evidence and per-case or shared acceptance limits; neither is supplied by this review. | Existing measurements and declared task scope, with identical inputs. |
+| Positive checks and limits | closed for this PR; Anka, chat, 2026-11-06 | Keep quantified results and explicit Incomplete. Defer missing positive checks and justified limits. | No new pass threshold. |
+| Video review | requested; Anka, chat, 2026-11-06 | Optional CLI recording for selected cases or all cases, with MP4s and an HTML review page. | Same run and fixed camera; no rendering in ASV. See R10 in decisions.md. |
 
 ## 1.8 Open questions for the reviewer
 
-1. Should the first PR retain explicit Incomplete results, or add the missing positive task checks and justified acceptance limits now?
+1. After short recording validation, should a new full video campaign run now? The recording option itself is requested.
 
-Explicit opt-in and lower-is-better ASV measures are approved but not implemented. Overall Pass rules stay open. The small fixes landed at the input code head; [decisions](decisions.md) records their scope and the user's requirements.
+Explicit opt-in and lower-is-better ASV measures are approved but not implemented. Missing Overall Pass rules are deferred. The small fixes landed at the input code head; [decisions](decisions.md) records the video requirements and decisions.

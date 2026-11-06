@@ -19,17 +19,18 @@ when the original message time is not retained. This review does not reopen them
 | R7 | "write me a overview using the review with pr skill" | Chat, 2026-11-05. |
 | R8 | "we dont have to exactly match the asset, as long as the machnism are the same" | Chat, 2026-11-06. |
 | R9 | Fix small review issues and "propose the big ones". | Chat, 2026-11-06. |
+| R10 | "add a option to record videos for all and review" | Chat, 2026-11-06. |
 
 ## Overview review
 
-Pending means the chapter text or proposal has not been approved. It does not cancel R1 to R9.
+Pending means the chapter text or proposal has not been approved. It does not cancel R1 to R10.
 
 | ID | Item | Where | Decision |
 |---|---|---|---|
 | D1 | Runner and scene boundary | overview.md, sections 1.1 to 1.4 | pending |
 | D2 | Measurement scope and result meaning | overview.md, section 1.5 | pending |
 | D3 | Numerical loop | overview.md, section 1.6 | pending |
-| D4 | Positive task checks and acceptance limits | overview.md, sections 1.7 and 1.8 | pending |
+| D4 | Positive task checks and acceptance limits | overview.md, sections 1.7 and 1.8 | Anka chose A, 2026-11-06: keep quantified results and explicit Incomplete in this PR; defer missing pass rules. |
 | D5 | Full ASV opt-in and runtime budget | overview.md, sections 1.7 and 1.8 | Explicit opt-in approved by Anka, 2026-11-06; implementation and runtime measurement pending. |
 | D6 | Lower-is-better ASV status and coverage encoding | overview.md, sections 1.7 and 1.8 | Approved by Anka, 2026-11-06; use clear failure and missing-coverage measures. Implementation pending. |
 
@@ -70,3 +71,22 @@ is still open. This choice needs no ASV extension.
 
 Implementation is pending while the remaining review points are discussed.
 Existing result files remain unchanged. Overall Pass rules are still open.
+
+On 2026-11-06, Anka chose A for D4. This PR retains measured criteria and
+explicit Incomplete outcomes. Missing positive checks and justified limits
+will be designed later. This does not approve a claim of task success from
+numerical completion or visual inspection.
+
+Anka also requested optional recording for all cases and video review (R10).
+Use the existing CLI case selection, including `--all`, with an optional
+`--video` flag. Produce an MP4 for each supported case and a local HTML review
+page beside the JSON results. Video and measurements must come from the same
+run. Keep all catalog entries visible, including failures and unsupported cases.
+
+Implementation choices: public ViewerGL frame capture; an optional FFmpeg
+encoder; one process per recorded case; fixed authored cameras; full selected
+schedule at its native frame rate. ASV keeps rendering off. The page keeps
+time step, substeps and iterations visible. Descriptions and material, contact
+and mesh details are folded. Recording failures stay separate from physics
+outcomes. Videos do not turn an Incomplete result into Pass. Short recordings
+will validate the option; a new full recording campaign is not implied.
