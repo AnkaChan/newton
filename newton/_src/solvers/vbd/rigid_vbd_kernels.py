@@ -8258,6 +8258,8 @@ def apply_rigid_soft_truncation(
     soft_contact_normal: wp.array[wp.vec3],
     soft_contact_barycentric: wp.array[wp.vec3],
     soft_contact_rigid_indices: wp.array[wp.vec3i],
+    particle_contact_gate: wp.array[wp.int32],
+    shape_contact_gate: wp.array[wp.int32],
     shape_body: wp.array[wp.int32],
     shape_transform: wp.array[wp.transform],
     shape_scale: wp.array[wp.vec3],
@@ -8302,6 +8304,13 @@ def apply_rigid_soft_truncation(
     indices = soft_contact_indices[contact_index]
     if indices[0] < 0:
         return
+    # Suture contact gate (ADR 0002): a gated record builds no plane.
+    if shape_contact_gate.shape[0] > 0:
+        gate_bits = shape_contact_gate[soft_contact_shape[contact_index]]
+        if gate_bits != 0:
+            for k in range(3):
+                if indices[k] >= 0 and (particle_contact_gate[indices[k]] & gate_bits) != 0:
+                    return
     bary = soft_contact_barycentric[contact_index]
     rigid_indices = soft_contact_rigid_indices[contact_index]
 
