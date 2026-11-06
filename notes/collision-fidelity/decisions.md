@@ -30,7 +30,7 @@ Pending means the chapter text or proposal has not been approved. It does not ca
 | D2 | Measurement scope and result meaning | overview.md, section 1.5 | pending |
 | D3 | Numerical loop | overview.md, section 1.6 | pending |
 | D4 | Positive task checks and acceptance limits | overview.md, sections 1.7 and 1.8 | pending |
-| D5 | Full ASV opt-in and runtime budget | overview.md, sections 1.7 and 1.8 | pending |
+| D5 | Full ASV opt-in and runtime budget | overview.md, sections 1.7 and 1.8 | Explicit opt-in approved by Anka, 2026-11-06; implementation and runtime measurement pending. |
 | D6 | Lower-is-better ASV status and coverage encoding | overview.md, sections 1.7 and 1.8 | pending |
 
 ## Decisions taken in review
@@ -48,3 +48,9 @@ The fixes landed at `32ef532f7ffc62ffa0688826583d72496df4604b`:
 These are implementation fixes, not approval of D1 to D6 or evidence of a successful full-hold campaign on the new head.
 Chapter 1 describes that code head.
 The review branch changes documents only. The upstream implementation PR stays draft.
+
+On 2026-11-06, Anka chose A for full-run cost: full collision-fidelity cases
+must require explicit opt-in. An unfiltered ASV run must skip them. All 45
+catalog cases remain available, with their full hold durations unchanged.
+This settles the opt-in part of D5. No runtime limit or shortened schedule was
+approved. The current implementation still includes full cases by default.

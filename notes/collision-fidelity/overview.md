@@ -200,14 +200,13 @@ The ASV cache calls the runner once; its tracks read this result (`asv/benchmark
 | Measurement reference | closed; Anka, earlier chat | Self-measured state; simple analytic solutions allowed. | None; requirement R3. |
 | Generated assets | closed; Anka, chat, 2026-11-06 | Preserve the mechanism; exact asset matching is not required. | None; requirement R8. |
 | Run length | `profile` | `smoke`: at most 1 s; `full`: complete schedule and declared long hold. | Same selected case; coverage stays visible. |
-| Full ASV workload | pending | Keep unfiltered execution, or add an explicit opt-in with a measured runtime budget. | Full selected cases; no shortened hold presented as equivalent. |
+| Full ASV workload | explicit opt-in approved; Anka, chat, 2026-11-06 | Unfiltered runs must skip full cases. Implementation and runtime measurement remain pending. | Full selected cases; no shortened hold presented as equivalent. |
 | ASV status direction | pending | Keep raw completion/status tracks, or add lower-is-better failure/coverage encodings. | Same cached result; scalar names and direction are unchanged today. |
 | Positive checks and limits | pending | Define positive task evidence and per-case or shared acceptance limits; neither is supplied by this review. | Existing measurements and declared task scope, with identical inputs. |
 
 ## 1.8 Open questions for the reviewer
 
-1. Should full ASV workloads require an explicit opt-in, and what measured runtime budget should apply?
-2. Should status and coverage tracks use lower-is-better encodings for ASV comparisons?
-3. Which positive task checks and acceptance limits should be designed first?
+1. Should status and coverage tracks use lower-is-better encodings for ASV comparisons?
+2. Which positive task checks and acceptance limits should be designed first?
 
-These larger proposals are not approved. The small fixes landed at the input code head; [decisions](decisions.md) records their scope and the user's requirements.
+Explicit opt-in is approved but not implemented. The remaining proposals stay open. The small fixes landed at the input code head; [decisions](decisions.md) records their scope and the user's requirements.
