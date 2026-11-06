@@ -6,7 +6,7 @@
 - Purpose: review how the benchmark builds scenes, measures contact, and reports results.
 - Inputs: Newton at `32ef532f7ffc62ffa0688826583d72496df4604b`; [catalog digest](inputs/catalog.md); [requirements and decisions](decisions.md).
 - Pseudo code: real names, plain conditions, explicit loops. Indentation marks function and control bodies only.
-- Status: chapter 1 refreshed on 2026-11-06 after the small review fixes. This describes the existing draft implementation in [upstream PR #5144](https://github.com/newton-physics/newton/pull/5144); the larger proposals remain pending.
+- Status: chapter 1 refreshed on 2026-11-06 after the small review fixes. This describes the existing draft implementation in [upstream PR #5144](https://github.com/newton-physics/newton/pull/5144). Full-run opt-in and lower-is-better ASV measures are approved but not implemented; Overall Pass rules remain open.
 
 ## 1.1 Intent
 
@@ -201,12 +201,11 @@ The ASV cache calls the runner once; its tracks read this result (`asv/benchmark
 | Generated assets | closed; Anka, chat, 2026-11-06 | Preserve the mechanism; exact asset matching is not required. | None; requirement R8. |
 | Run length | `profile` | `smoke`: at most 1 s; `full`: complete schedule and declared long hold. | Same selected case; coverage stays visible. |
 | Full ASV workload | explicit opt-in approved; Anka, chat, 2026-11-06 | Unfiltered runs must skip full cases. Implementation and runtime measurement remain pending. | Full selected cases; no shortened hold presented as equivalent. |
-| ASV status direction | pending | Keep raw completion/status tracks, or add lower-is-better failure/coverage encodings. | Same cached result; scalar names and direction are unchanged today. |
+| ASV status direction | closed; Anka, chat, 2026-11-06; implementation pending | Use failure rate, per-case failure flags, and missing coverage. Preserve unknown results and rate denominators; see D6 in decisions.md. | Same cached result; no new physical measurement or ASV extension. |
 | Positive checks and limits | pending | Define positive task evidence and per-case or shared acceptance limits; neither is supplied by this review. | Existing measurements and declared task scope, with identical inputs. |
 
 ## 1.8 Open questions for the reviewer
 
-1. Should status and coverage tracks use lower-is-better encodings for ASV comparisons?
-2. Which positive task checks and acceptance limits should be designed first?
+1. Should the first PR retain explicit Incomplete results, or add the missing positive task checks and justified acceptance limits now?
 
-Explicit opt-in is approved but not implemented. The remaining proposals stay open. The small fixes landed at the input code head; [decisions](decisions.md) records their scope and the user's requirements.
+Explicit opt-in and lower-is-better ASV measures are approved but not implemented. Overall Pass rules stay open. The small fixes landed at the input code head; [decisions](decisions.md) records their scope and the user's requirements.
