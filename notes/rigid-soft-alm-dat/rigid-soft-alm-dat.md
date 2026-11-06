@@ -3,7 +3,7 @@
 - Purpose: one sentence. Give the rigid-soft contact rows (a soft particle, edge or face against a rigid shape) the scheme the soft self-contact has under `alm_dat`: a stored division plane per record, an ALM row with a multiplier that reads the trial, the host's support metric, and a particle anchor that commits against both plane families. One chapter per component, written before the code.
 - Inputs: `newton` at `cfd6e07b5` on `ankac/alm-dat-main` (today's main, the #4222 self-contact storage, ALM-DAT with decisions D1 to D16); `inputs/alm-dat-self-contact-design.md` and `inputs/alm-dat-self-contact-decisions.md` (the self-contact design and its decisions); `inputs/algorithm-reference.md` (Anka's reference pseudo code of 2026-10-14).
 - Pseudo code convention: structured statements with real function names, per the skill's `pseudo-code-style.md`. Names that exist today are written as they are; names that do not exist yet carry (new) the first time. Comments stand on their own line or after #.
-- Status: chapter 1 drafted 2026-11-06; D1 (body side) decided 2026-11-06. Nothing implemented.
+- Status: chapter 1 drafted 2026-11-06; D1 (body side) and D3 (multiplier history) decided 2026-11-06. Nothing implemented.
 
 ## 1. The step scheme: rigid-soft rows beside the self-contact rows
 
@@ -21,7 +21,7 @@ Today a rigid-soft record is a penalty: a per-contact penalty stiffness ramped e
 | What is truncated | particles in place, bodies in place after every body colour (`solver_vbd.py:3839`, `solver_vbd.py:5489`, `solver_vbd.py:4655`) | the particle anchor and the body anchor, both in `_alm_dat_truncate` (`solver_vbd.py:4095`): straight rays for the soft side, curved trajectories for the rigid side (`rigid_vbd_kernels.py:8134`); no in-place truncation of either side (D1) |
 | Schedule | RIGID and SOFT_SELF_CONTACT slots must match (`solver_vbd.py:6074-6100`); `alm_dat` refuses rigid-soft DAT (`solver_vbd.py:1218`) | the refusal goes; both slots detect together; the second detection of D3 re-detects both families at the anchor (`solver_vbd.py:4162`) |
 | Penalty metric | the ramped penalty stiffness (`rigid_vbd_kernels.py:7333`) | the rigid contact rule (D15): the particle support along `n` (`particle_dat_kernels.py:566`) in series with the body's Delassus scale along `n` (`rigid_vbd_kernels.py:1205`, `rigid_vbd_kernels.py:1262`, `rigid_vbd_kernels.py:1276`); friction from the inertial supports in series |
-| Multiplier memory | none: the penalty is re-seeded at every detection (`solver_vbd.py:4440`) | carried across detections by matching the record key (fork "Multiplier history") |
+| Multiplier memory | none: the penalty is re-seeded at every detection (`solver_vbd.py:4440`) | carried across detections by matching the record key: soft indices, shape, rigid indices (D3); unique per detection because every pass emits at most one record per soft feature and shape (`kernels.py:1354`, `soft_contacts_sdf.py:527`) and the mesh pass adds the rigid corners (`soft_contacts_mesh.py:1208`) |
 | Body side | the same penalty force and torque accumulated per body (`rigid_vbd_kernels.py:5945`); the body pose is truncated in place, so it is always certified | the reaction of the same row at the body trial: `-F n` and its torque at the record's body point, from the shared multiplier and gap; the body anchor commits like the particle anchor, with the host's end-point bound `|dx| + |angle| x radius <= budget` from the detection pose (`rigid_vbd_kernels.py:8503`) (D1) |
 | Masked rows (#4227) | no force, geometry kept (`soft_contacts_mesh.py:1593`) | no row, plane kept: the truncation still certifies the pair |
 | Analytic SDF records | plane at the stored rigid surface point and record normal (`rigid_vbd_kernels.py:8252` docstring) | the same, re-placed with both sides' motion |
@@ -66,7 +66,7 @@ Body state read by the rows: `body_q`, `body_q_prev_collision_detection` (`solve
 | Attribute | dtype, shape | Meaning |
 |---|---|---|
 | `_rigid_soft_planes` (new) | `RigidSoftDatPlanes`: normal vec3 `[C]`, point vec3 `[C]`, margin float `[C]`, valid int32 `[C]` | stored plane per record, world frame, rebuilt at every commit (chapter 2) |
-| `_rigid_soft_alm_state` (new) | `RigidSoftAlmState`: lambda float `[C]`, lambda_t vec3 `[C]`; key int32 `[C, 7]`, prev_key, prev_lambda, prev_lambda_t only in the matched variant | multipliers per record; the key arrays exist only if fork "Multiplier history" picks matching |
+| `_rigid_soft_alm_state` (new) | `RigidSoftAlmState`: lambda float `[C]`, lambda_t vec3 `[C]`, key int32 `[C, 7]`; prev_count int32 `[1]`, prev_key int32 `[C, 7]`, prev_lambda float `[C]`, prev_lambda_t vec3 `[C]` | multipliers per record and the last detection's keyed multipliers for matching (D3); the matching mechanism is a chapter 3 fork |
 | `_dat_anchor` | vec3 `[P]` | the certified particle anchor, shared with the self-contact rows (`solver_vbd.py:4095-4125`) |
 | `_dat_body_anchor` (new) | transform `[B]` | the certified body pose (D1): starts at the detection pose, moves only at a commit, written to the state at the step end; the body trial is `state_in.body_q` |
 | `body_q_prev_collision_detection` | transform `[B]` | the body detection pose; centre of the body budget (`solver_vbd.py:3636`) |
@@ -102,7 +102,7 @@ _alm_dat_initialize(state_in, dt):                                        # solv
     build_contact_planes(anchor, trial, refresh_normals = True)                   # self-contact planes (particle_dat_kernels.py:369)
     build_rigid_soft_planes(anchor, trial, body_anchor, body_q) (new)             # one plane per record between the two anchors, offset for both sides' remaining motion (rigid_vbd_kernels.py:7916, 8001)
     match_contact_history()                                                       # self-contact multipliers (particle_dat_kernels.py:1426)
-    match_rigid_soft_history() (new)                                              # rigid-soft multipliers by record key, else zero
+    match_rigid_soft_history() (new)                                              # multipliers follow the record key (D3), unmatched records start at zero; chapter 3
     _alm_dat_truncate(trial, refresh_normals = True)
 
 _alm_dat_truncate(trial, refresh_normals):                                # solver_vbd.py:4095
@@ -149,7 +149,7 @@ Names that exist today: `step` `solver_vbd.py:3203-3300`, `_collision_detection_
 |---|---|---|---|
 | Body side | none | closed, D1 (Anka, 2026-11-06: "follow the soft side design"): a body has a detection pose, an anchor and a trial like a particle; the in-place truncation (`solver_vbd.py:5489`, `solver_vbd.py:4655`) is not run under alm; rejected: bodies in place as the rigid-soft DAT does today | closed |
 | Method switch | `rigid_soft_contact_method` (new) | separate switch, default `"penalty"`, as the host keeps one flag per contact family (`rigid_compliant_alm` `solver_vbd.py:510`, `particle_self_contact_method` `solver_vbd.py:499`); or implied by `particle_self_contact_method="alm_dat"` whenever rigid-soft DAT is on | none |
-| Multiplier history | none | re-seeded at every detection as the penalty is today (`solver_vbd.py:4440`); matched by the record key `(soft indices, shape, rigid indices)` like the sorted self-contact rows (`particle_dat_kernels.py:1426`); or the body-body contact history mechanism (`rigid_contact_history`, `solver_vbd.py:520`) | garments on grippers of the collision-fidelity benchmark |
+| Multiplier history | none | closed, D3 (Anka, 2026-11-06: "yes, implement match"): matched by the record key `(soft indices, shape, rigid indices)` like the sorted self-contact rows (`particle_dat_kernels.py:1426`); rejected: re-seeding at every detection as the penalty does today (`solver_vbd.py:4440`), and the body-body `rigid_contact_history` mechanism (`solver_vbd.py:520`) | closed |
 | Rigid support in the gap | none | the rigid primitive's support along `n` for mesh rows (#4936, `contacts.py:416`); the stored body point for analytic and recovery records; or the stored point for every record | none |
 | Friction metric | none | inertial supports in series (the D15 rule for the soft rows); or the body's tangent Delassus scale alone | incline and towel cases |
 | Masked rows | none | plane kept, no row (proposed); or no plane either | none |
@@ -158,6 +158,6 @@ Names that exist today: `step` `solver_vbd.py:3203-3300`, `_collision_detection_
 
 1. Closed (D1): the body has an anchor and a trial, as the soft side.
 2. One switch for both families, or the separate `rigid_soft_contact_method` (fork "Method switch")?
-3. Should rigid-soft multipliers persist across detections, and by which key (fork "Multiplier history")?
+3. Closed (D3): multipliers follow the record key across detections.
 4. World and kinematic shapes have Delassus zero: rho from the particle support alone, as `_series_scale` returns for an absent side, acceptable?
 5. Masked rows keep their plane and carry no row: is that the intended reading of the force mask?

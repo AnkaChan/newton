@@ -33,6 +33,10 @@ _Avoid_: max displacement, cap, path length
 One rigid-soft contact entry of `Contacts.soft_contact_*`: soft feature, rigid shape and primitive, body point, normal.
 _Avoid_: pair, contact
 
+**Record key**:
+The soft indices, shape and rigid indices of a record; unique within one detection, and the handle that carries a row's multipliers across detections.
+_Avoid_: contact id, pair id, slot
+
 **Row**:
 The ALM constraint of a record or a self-contact slot, with its multiplier and its metric.
 _Avoid_: constraint, contact force
@@ -47,6 +51,7 @@ _Avoid_: penalty stiffness, rho floor, K
 - A **Row** reads the **Trial** of both sides and pushes both.
 - A **Commit** moves an **Anchor**; a particle and a body each have one.
 - The **Budget** is measured from the **Detection pose**, never from the previous anchor.
+- A **Row**'s multipliers follow the **Record key** across detections; a key seen for the first time starts at zero.
 
 ## Example dialogue
 

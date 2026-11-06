@@ -12,12 +12,13 @@
 |---|---|---|---|
 | D1 | Body side: in place or body anchor | chapter 1, fork "Body side", question 1 | decided 2026-11-06: anchor and trial pair, as the soft side |
 | D2 | Method switch granularity | chapter 1, fork "Method switch", question 2 | pending |
-| D3 | Multiplier history across detections | chapter 1, fork "Multiplier history", question 3 | pending |
+| D3 | Multiplier history across detections | chapter 1, fork "Multiplier history", question 3 | decided 2026-11-06: matched by the record key |
 | D4 | Rigid support in the gap | chapter 1, fork "Rigid support in the gap" | pending |
 | D5 | Friction metric | chapter 1, fork "Friction metric" | pending |
 | D6 | Masked rows | chapter 1, fork "Masked rows", question 5 | pending |
 | D7 | World and kinematic shapes: rho from the particle support alone | chapter 1, question 4 | pending |
 | D8 | Body budget fraction rule: exact translation sphere plus linear rotation bound, or bisection on the combined end-point bound | chapter 2 | pending |
+| D9 | Matching mechanism for the record key: sorted merge on a packed key as the self-contact rows, or a hash table | chapter 3 | pending |
 
 ## Decisions taken in review
 
@@ -31,3 +32,12 @@ rigid side along curved trajectories (`rigid_trajectory_truncation_t`); the body
 bound `|dx| + |angle| x radius <= budget` from the detection pose (`apply_body_truncation_ts`); the final rounds
 run before `_finalize_rigid_bodies`, which then reads the body anchor; the second detection runs at both anchors
 with `body_q` parked. Rejected: bodies truncated in place as the rigid-soft DAT does today. Opened D8 for chapter 2.
+
+### D3, multiplier history (2026-11-06, chat, grill session)
+
+Anka: "yes, implement match". The rigid-soft multipliers follow the record key (soft indices, shape, rigid indices)
+across the mid-step detection and across substeps; unmatched records start at zero. The key is unique within one
+detection: the legacy and SDF passes emit at most one record per soft feature and shape (`kernels.py:1354`,
+`soft_contacts_sdf.py:527`), the mesh pass adds the rigid corners (`soft_contacts_mesh.py:1208`). Rejected:
+re-seeding at every detection (the penalty today), and the body-body `rigid_contact_history` mechanism. Opened D9
+(matching mechanism) for chapter 3.
