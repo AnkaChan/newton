@@ -942,7 +942,6 @@ def _vertex_triangle_row_geometry(
     _closest, bary, _feature = triangle_closest_point(a, b, c, pos[v])
     witness = bary[0] * a + bary[1] * b + bary[2] * c
     diff = pos[v] - witness
-    dis = wp.length(diff)
     # the row is the ALM multiplier of the division-plane constraint, so its force is
     # that constraint's gradient: the stored plane normal; the gap is measured along it
     direction = n
@@ -996,7 +995,6 @@ def _edge_edge_row_geometry(
     c1 = e1_a + (e1_b - e1_a) * s
     c2 = e2_a + (e2_b - e2_a) * t
     diff = c1 - c2
-    dis = wp.length(diff)
     # the row is the ALM multiplier of the division-plane constraint, so its force is
     # that constraint's gradient: the stored plane normal; the gap is measured along it
     direction = n
