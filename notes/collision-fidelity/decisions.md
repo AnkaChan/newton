@@ -31,8 +31,8 @@ Pending means the chapter text or proposal has not been approved. It does not ca
 | D2 | Measurement scope and result meaning | overview.md, section 1.5 | pending |
 | D3 | Numerical loop | overview.md, section 1.6 | pending |
 | D4 | Positive task checks and acceptance limits | overview.md, sections 1.7 and 1.8 | Anka chose A, 2026-11-06: keep quantified results and explicit Incomplete in this PR; defer missing pass rules. |
-| D5 | Full ASV opt-in and runtime budget | overview.md, sections 1.7 and 1.8 | Explicit opt-in approved by Anka, 2026-11-06; implementation and runtime measurement pending. |
-| D6 | Lower-is-better ASV status and coverage encoding | overview.md, sections 1.7 and 1.8 | Approved by Anka, 2026-11-06; use clear failure and missing-coverage measures. Implementation pending. |
+| D5 | Full ASV opt-in and runtime budget | overview.md, sections 1.7 and 1.8 | Explicit opt-in approved by Anka, 2026-11-06; implemented. Full-set runtime measurement pending. |
+| D6 | Lower-is-better ASV status and coverage encoding | overview.md, sections 1.7 and 1.8 | Approved by Anka, 2026-11-06; implemented with clear failure and missing-coverage measures. |
 
 ## Decisions taken in review
 
@@ -47,14 +47,14 @@ The fixes landed at `32ef532f7ffc62ffa0688826583d72496df4604b`:
 - Contact metadata states the numeric cloth/tet comparison. Rod references include stretch and shear; repeated policy application verifies elastic references. The prescribed pad boundary remains fixed through its declared observation endpoint.
 
 These are implementation fixes, not approval of D1 to D6 or evidence of a successful full-hold campaign on the new head.
-Chapter 1 describes that code head.
+Chapter 1 initially described that code head; the final entry below records its refresh.
 The review branch changes documents only. The upstream implementation PR stays draft.
 
 On 2026-11-06, Anka chose A for full-run cost: full collision-fidelity cases
 must require explicit opt-in. An unfiltered ASV run must skip them. All 45
 catalog cases remain available, with their full hold durations unchanged.
 This settles the opt-in part of D5. No runtime limit or shortened schedule was
-approved. The current implementation still includes full cases by default.
+approved. At that point, `32ef532` still included full cases by default.
 
 On 2026-11-06, Anka chose clear negative measures for ASV: "you can change
 success rate to failure rate, etc". This settles D6. ASV 0.6.6 can store
@@ -69,8 +69,8 @@ is still open. This choice needs no ASV extension.
 - Where evaluation coverage is compared, use the unevaluated fraction: Incomplete / (Pass + Fail + Incomplete). Exclude unsupported and N/A cases from both rate denominators.
 - Keep Jitter, RMS speed, and fixed-support penetration unchanged. Unsupported execution still skips; execution errors remain errors.
 
-Implementation is pending while the remaining review points are discussed.
-Existing result files remain unchanged. Overall Pass rules are still open.
+At that point, implementation was pending during the review discussion.
+Existing result files remained unchanged. Overall Pass rules were still open.
 
 On 2026-11-06, Anka chose A for D4. This PR retains measured criteria and
 explicit Incomplete outcomes. Missing positive checks and justified limits
@@ -90,3 +90,10 @@ time step, substeps and iterations visible. Descriptions and material, contact
 and mesh details are folded. Recording failures stay separate from physics
 outcomes. Videos do not turn an Incomplete result into Pass. Short recordings
 will validate the option; a new full recording campaign is not implied.
+
+On 2026-11-06, Anka explicitly chose to add the recording option and validate
+short recordings only. Do not start a full video campaign for this step.
+Implementation commit `50276067eb067907b5792fde47e80eedddf10639` adds the
+requested video/review option and applies D5 and D6. D4 retains Incomplete.
+No solver, asset, scene recipe, or physical schedule changed. Earlier entries
+above describe the state when those decisions were made.

@@ -3,7 +3,7 @@
 
 # Catalog snapshot
 
-- Source: `asv/collision_fidelity/cases.json` at `32ef532f7ffc62ffa0688826583d72496df4604b`.
+- Source: `asv/collision_fidelity/cases.json` at `50276067eb067907b5792fde47e80eedddf10639`.
 - Refreshed on 2026-11-06. This is an inventory, not a pass report.
 
 ## Counts
@@ -78,8 +78,8 @@ The base cable factory lists C6 and C7 only. The C9 robot replacements remain in
 | Case records and loading | `asv/collision_fidelity/cases.json:1-102`; `asv/collision_fidelity/catalog.py:10-21` |
 | Scene routing and unsupported recipe | `asv/collision_fidelity/scenes.py:11-59` |
 | Asset sources and retained fixtures | `asv/collision_fidelity/assets/README.md:3-42` |
-| Output contract and coverage | `asv/collision_fidelity/runner.py:17-68,159-307` |
+| Output contract and coverage | `asv/collision_fidelity/runner.py:17-68,185-356` |
 | Current measurement definitions | `asv/collision_fidelity/metrics.py:110-131,381-449,451-555` |
 | Current criterion reduction | `asv/collision_fidelity/tasks.py:195-256` |
-| ASV cache and tracks | `asv/benchmarks/simulation/bench_collision_fidelity.py:24-131` |
+| ASV cache and tracks | `asv/benchmarks/simulation/bench_collision_fidelity.py:25-146` |
 | Shared semantic version | `asv/collision_fidelity/version.py:15-50` |
