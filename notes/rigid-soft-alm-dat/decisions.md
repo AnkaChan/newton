@@ -11,7 +11,7 @@
 | ID | Item | Where | Decision |
 |---|---|---|---|
 | D1 | Body side: in place or body anchor | chapter 1, fork "Body side", question 1 | decided 2026-11-06: anchor and trial pair, as the soft side |
-| D2 | Method switch granularity | chapter 1, fork "Method switch", question 2 | pending |
+| D2 | Method switch granularity | chapter 1, fork "Method switch", question 2 | decided 2026-11-06: no new argument, implied by the existing flags |
 | D3 | Multiplier history across detections | chapter 1, fork "Multiplier history", question 3 | decided 2026-11-06: matched by the record key |
 | D4 | Rigid support in the gap | chapter 1, fork "Rigid support in the gap" | pending |
 | D5 | Friction metric | chapter 1, fork "Friction metric" | pending |
@@ -41,3 +41,10 @@ detection: the legacy and SDF passes emit at most one record per soft feature an
 `soft_contacts_sdf.py:527`), the mesh pass adds the rigid corners (`soft_contacts_mesh.py:1208`). Rejected:
 re-seeding at every detection (the penalty today), and the body-body `rigid_contact_history` mechanism. Opened D9
 (matching mechanism) for chapter 3.
+
+### D2, the switch (2026-11-06, chat, grill session)
+
+Anka: "ok" to the recommendation. No new argument. `rigid_soft_enable_dat=True` together with
+`particle_self_contact_method="alm_dat"` selects the ALM-DAT rigid-soft rows; the pair refused today at
+`solver_vbd.py:1218` becomes the feature. The other three combinations keep today's meaning. Rejected: a separate
+`rigid_soft_contact_method` string.
