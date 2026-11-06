@@ -51,6 +51,9 @@ PARAMS = {
     "tissue_density": 1000.0,
     "tissue_youngs_modulus": 1.0e5,
     "tissue_poisson": 0.45,
+    # Volumetric damping [Pa s]. The contact values below already follow the tuning guide's stiffness-ratio rule
+    # and remove the tissue jitter; a damping of 1e2 to 1e3 adds a start transient here (the facing faces bulge 0.2
+    # to 0.9 mm in the first 0.2 s, because the damping Hessian k_damp / dt exceeds the elastic stiffness).
     "tissue_damping": 0.0,
     "particle_radius": 5.0e-4,
     # needle: half circle
@@ -63,7 +66,17 @@ PARAMS = {
     "thread_segment": 2.5e-3,
     "thread_density": 1100.0,
     "thread_stretch_stiffness": 2.0e3,
-    "thread_bend_stiffness": 1.0e-6,
+    # Bend and twist stiffness per joint [N m/rad]: EI / L of a 0.15 mm nylon thread is about 4e-4; 1e-4 keeps the
+    # slack in smooth curves instead of flipping zigzags. Damping near half critical for the 0.2 mg capsules.
+    "thread_bend_stiffness": 1.0e-4,
+    "thread_stretch_damping": 0.02,
+    "thread_bend_damping": 5.0e-9,
+    # Contact material of the thread and needle shapes (averaged with the soft side for rigid-soft contact).
+    # The thread's 2e3 N/m joints set its scale: a contact 10 times stiffer than them jitters (tuning guide).
+    "thread_mu": 0.1,
+    "thread_contact_ke": 1.0e3,
+    "thread_contact_kd": 10.0,
+    "needle_mu": 0.2,
     # Free end of the thread: clamped on top of the right block, 22 mm past the exit and 10 mm beside the needle
     # plane. The route from the needle tail to the clamp lays the slack (about 70 mm in all) on that block.
     "clamp_position": (0.030, -0.010, 0.01315),
@@ -81,8 +94,9 @@ PARAMS = {
     # contact
     "rigid_gap": 1.0e-3,
     "soft_contact_gap": 1.0e-3,
-    "soft_contact_ke": 2.0e4,
-    "soft_contact_kd": 1.0,
+    # Within 10x of the tissue shear stiffness (34 kPa) and of the thread joints, with 1 percent damping.
+    "soft_contact_ke": 5.0e3,
+    "soft_contact_kd": 50.0,
     "soft_contact_mu": 0.3,
     "self_contact_margin": 1.0e-3,
     "self_contact_gap": 1.0e-3,
@@ -164,6 +178,14 @@ class Example:
         self.model.soft_contact_mu = p["soft_contact_mu"]
         self.model.shape_material_ke.fill_(p["soft_contact_ke"])
         self.model.shape_material_kd.fill_(p["soft_contact_kd"])
+        shape_body = self.model.shape_body.numpy()
+        thread_shapes = np.flatnonzero(np.isin(shape_body, self.thread_bodies))
+        ke = self.model.shape_material_ke.numpy()
+        kd = self.model.shape_material_kd.numpy()
+        ke[thread_shapes] = p["thread_contact_ke"]
+        kd[thread_shapes] = p["thread_contact_kd"]
+        self.model.shape_material_ke.assign(ke)
+        self.model.shape_material_kd.assign(kd)
         self.model.vbd.suture_grip.fill_(p["grip"])
         self.model.vbd.suture_mu.fill_(p["tunnel_mu"])
         self.model.vbd.suture_stiffness.fill_(p["tunnel_stiffness"])
@@ -258,7 +280,7 @@ class Example:
         count = p["needle_capsules"]
         angles = [math.pi - math.pi * k / count for k in range(count + 1)]
         points = [wp.vec3(R * math.cos(a), 0.0, R * math.sin(a)) for a in angles]
-        cfg = newton.ModelBuilder.ShapeConfig(density=p["needle_density"], mu=0.2)
+        cfg = newton.ModelBuilder.ShapeConfig(density=p["needle_density"], mu=p["needle_mu"])
         self.needle_shapes = []
         for a, b in itertools.pairwise(points):
             mid = 0.5 * (a + b)
@@ -297,12 +319,14 @@ class Example:
         self.thread_length = thread_length
         rod = newton.Rod(points=polyline, radius=p["thread_radius"])
         thread_dir = wp.normalize(polyline[1] - polyline[0])
-        thread_cfg = newton.ModelBuilder.ShapeConfig(density=p["thread_density"], mu=0.3)
+        thread_cfg = newton.ModelBuilder.ShapeConfig(density=p["thread_density"], mu=p["thread_mu"])
         self.thread_bodies, _joints = builder.add_rod(
             rod=rod,
             cfg=thread_cfg,
             stretch_stiffness=p["thread_stretch_stiffness"],
             bend_stiffness=p["thread_bend_stiffness"],
+            stretch_damping=p["thread_stretch_damping"],
+            bend_damping=p["thread_bend_damping"],
             label="suture_thread",
         )
         half_seg = 0.5 * thread_length / segments
@@ -314,6 +338,8 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, -half_seg), wp.quat_identity()),
             stretch_stiffness=p["thread_stretch_stiffness"],
             bend_stiffness=p["thread_bend_stiffness"],
+            stretch_damping=p["thread_stretch_damping"],
+            bend_damping=p["thread_bend_damping"],
             label="suture_swage",
         )
         clamp = builder.add_body(xform=wp.transform(clamp_world, wp.quat_identity()), label="suture_clamp")
