@@ -3,8 +3,8 @@
 
 # Catalog snapshot
 
-- Source: `asv/collision_fidelity/cases.json` at `c63a3a24969f33cd86a7521e8d705664f2d29ed5`.
-- Extracted on 2026-11-05. This is an inventory, not a pass report.
+- Source: `asv/collision_fidelity/cases.json` at `32ef532f7ffc62ffa0688826583d72496df4604b`.
+- Refreshed on 2026-11-06. This is an inventory, not a pass report.
 
 ## Counts
 
@@ -18,6 +18,8 @@
 The duck case requires a second dynamics solver. Its asset and catalog entry remain.
 Robot cable tasks belong to Robot manipulation. The two Cables cases are crossed
 cables and cylinder wrap. Soft contact includes two analytic free-fall cases.
+Generated garment triangulations may differ across platforms. Current tests check the preserved mechanism, topology, scale, and landmarks; archived byte hashes are provenance (`asv/collision_fidelity/assets/README.md:3-14`; `asv/tests/test_collision_fidelity_assets.py:41-122`).
+The base cable factory lists C6 and C7 only. The C9 robot replacements remain in this catalog (`asv/collision_fidelity/cable_scenes.py:23-24`; `asv/collision_fidelity/scenes.py:45-46`).
 
 ## Cases
 
@@ -75,9 +77,9 @@ cables and cylinder wrap. Soft contact includes two analytic free-fall cases.
 |---|---|
 | Case records and loading | `asv/collision_fidelity/cases.json:1-102`; `asv/collision_fidelity/catalog.py:10-21` |
 | Scene routing and unsupported recipe | `asv/collision_fidelity/scenes.py:11-59` |
-| Asset sources and retained fixtures | `asv/collision_fidelity/assets/README.md:3-35` |
-| Output contract and coverage | `asv/collision_fidelity/runner.py:17-68,144-290` |
-| Current measurement definitions | `asv/collision_fidelity/metrics.py:110-131,377-445,447-551` |
+| Asset sources and retained fixtures | `asv/collision_fidelity/assets/README.md:3-42` |
+| Output contract and coverage | `asv/collision_fidelity/runner.py:17-68,159-307` |
+| Current measurement definitions | `asv/collision_fidelity/metrics.py:110-131,381-449,451-555` |
 | Current criterion reduction | `asv/collision_fidelity/tasks.py:195-256` |
-| ASV cache and tracks | `asv/benchmarks/simulation/bench_collision_fidelity.py:23-126` |
-| Shared semantic version | `asv/collision_fidelity/version.py:15-45` |
+| ASV cache and tracks | `asv/benchmarks/simulation/bench_collision_fidelity.py:24-131` |
+| Shared semantic version | `asv/collision_fidelity/version.py:15-50` |
