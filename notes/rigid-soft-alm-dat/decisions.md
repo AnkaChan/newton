@@ -11,7 +11,7 @@
 | ID | Item | Where | Decision |
 |---|---|---|---|
 | D1 | Body side: in place or body anchor | chapter 1, fork "Body side", question 1 | decided 2026-11-06: anchor and trial pair, as the soft side |
-| D2 | Method switch granularity | chapter 1, fork "Method switch", question 2 | decided 2026-11-06: no new argument, implied by the existing flags |
+| D2 | Method switch granularity | chapter 1, fork "Method switch", question 2 | decided 2026-11-06: separate `rigid_soft_contact_method`, values `"penalty"` and `"alm"` |
 | D3 | Multiplier history across detections | chapter 1, fork "Multiplier history", question 3 | decided 2026-11-06: matched by the record key |
 | D4 | Rigid support in the gap | chapter 1, fork "Rigid support in the gap" | pending |
 | D5 | Friction metric | chapter 1, fork "Friction metric" | pending |
@@ -44,7 +44,8 @@ re-seeding at every detection (the penalty today), and the body-body `rigid_cont
 
 ### D2, the switch (2026-11-06, chat, grill session)
 
-Anka: "ok" to the recommendation. No new argument. `rigid_soft_enable_dat=True` together with
-`particle_self_contact_method="alm_dat"` selects the ALM-DAT rigid-soft rows; the pair refused today at
-`solver_vbd.py:1218` becomes the feature. The other three combinations keep today's meaning. Rejected: a separate
-`rigid_soft_contact_method` string.
+Anka first accepted the implied form ("ok"), then revised it minutes later: "changed my mind; give it a separate
+switch". Decision: a separate `rigid_soft_contact_method` string, default `"penalty"`, value `"alm"` for the
+ALM-DAT rows, as the host keeps one flag per contact family. `"alm"` requires `rigid_soft_enable_dat=True` and
+`particle_self_contact_method="alm_dat"`; `"penalty"` with `alm_dat` and rigid DAT stays refused
+(`solver_vbd.py:1218`). Rejected: implying the rows from the existing pair of flags.
