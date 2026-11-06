@@ -325,12 +325,14 @@ def _patch_on_incline(device, angle):
 
 
 def _incline_drift(device, mu, steps=120):
+    # 20 iterations: with 6 the under-converged contact rows hold even a frictionless patch
+    # on the incline (the penalty path too), so the test could not tell friction from that.
     angle = np.radians(10.0)
     model, fixed_count = _patch_on_incline(device, angle)
     model.soft_contact_mu = mu
     solver = newton.solvers.SolverVBD(
         model,
-        iterations=6,
+        iterations=20,
         particle_enable_self_contact=True,
         particle_self_contact_margin=0.02,
         particle_self_contact_gap=0.01,

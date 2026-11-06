@@ -48,6 +48,7 @@ from .particle_dat_kernels import (
     accumulate_alm_contact_force_and_hessian,
     build_contact_planes,
     commit_truncated_displacement,
+    compute_particle_material_hessian,
     create_particle_contact_alm_state,
     create_particle_contact_dat_planes,
     match_contact_history,
@@ -498,8 +499,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_self_contact_method: str = "penalty_dat",
         particle_dat_plane_update_interval: int = 1,
         particle_dat_truncation_iterations: int = 2,
-        particle_contact_alm_rho_scale: float = 1.0,
-        particle_contact_alm_rho_floor_ratio: float = 1.0,
         particle_contact_alm_hard_gap: float | None = None,
         particle_contact_alm_transition_band: float = 0.0,
         particle_contact_alm_wall_stiffness_ratio: float = 9.0,
@@ -614,7 +613,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 incompatible with ``rigid_soft_enable_dat``. Follows the soft self-contact
                 schedule: ``PRE_POST_INIT`` (default) detects at the step start and once
                 more at the certified anchor after the inertial step, which doubles the
-                motion admitted per step; ``PRE_INIT`` detects once.
+                motion admitted per step; ``PRE_INIT`` detects once. The contact rows'
+                penalty metric follows the host's contact rule: the normal row uses the
+                pair's support along the plane normal, each particle's inertia in series
+                with its material stiffness along that normal; the friction row uses the
+                pair's inertial support alone. Neither refers to the contact stiffness.
 
                 .. experimental::
                     ``particle_self_contact_method``, ``particle_dat_plane_update_interval``,
@@ -627,15 +630,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_dat_truncation_iterations: With ``"alm_dat"``, number of
                 truncate-and-rebuild rounds applied to the final iterate before the
                 step commits. Defaults to ``2``.
-            particle_contact_alm_rho_scale: With ``"alm_dat"``, positive multiplier on the
-                contact rows' inertia-derived ALM metric. Larger values move the row
-                toward a penalty response within a sweep (faster, stiffer) without
-                changing its converged force. Defaults to ``1.0``.
-            particle_contact_alm_rho_floor_ratio: With ``"alm_dat"``, lower bound on the
-                contact rows' ALM metric as a multiple of ``soft_contact_ke``. At the
-                plain inertia scale soft cloth rows pump lateral oscillations in the
-                coupled VBD sweep; the floor keeps the in-sweep response at least half
-                penalty-like. ``0`` disables the floor. Defaults to ``1.0``.
             particle_contact_alm_hard_gap: With ``"alm_dat"``, distance [m] above the stored
                 division plane at which the contact row's hard wall sits; the compliant
                 cushion spans from here to ``particle_self_contact_margin``. A contact
@@ -1229,12 +1223,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
         self.particle_dat_plane_update_interval = int(particle_dat_plane_update_interval)
         self.particle_dat_truncation_iterations = int(particle_dat_truncation_iterations)
-        if not (particle_contact_alm_rho_scale > 0.0):
-            raise ValueError("particle_contact_alm_rho_scale must be positive")
-        if particle_contact_alm_rho_floor_ratio < 0.0:
-            raise ValueError("particle_contact_alm_rho_floor_ratio must be nonnegative")
-        self.particle_contact_alm_rho_scale = float(particle_contact_alm_rho_scale)
-        self.particle_contact_alm_rho_floor_ratio = float(particle_contact_alm_rho_floor_ratio)
         if particle_contact_alm_hard_gap is None:
             particle_contact_alm_hard_gap = 0.25 * _sc_margin
         if self._alm_dat and not (0.0 <= particle_contact_alm_hard_gap < _sc_margin):
@@ -1261,6 +1249,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._dat_alm_state = None
         self._dat_anchor = None
         self._dat_trial_scratch = None
+        self._dat_material_hessian = None
         self._dat_coverage = None
         self._alm_dat_iteration = 0
         self._init_particle_system(
@@ -1423,6 +1412,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             if self._alm_dat:
                 self._dat_anchor = wp.zeros_like(model.particle_q, device=self.device)
                 self._dat_trial_scratch = wp.zeros_like(model.particle_q, device=self.device)
+                self._dat_material_hessian = wp.zeros(model.particle_count, dtype=wp.mat33, device=self.device)
                 self._dat_coverage = wp.zeros(1, dtype=wp.int32, device=self.device)
                 # frame-to-frame multiplier matching merges sorted rows
                 self._self_contact_detector().sort_contact_rows = True
@@ -4083,7 +4073,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
 
         if self._alm_dat:
-            self._alm_dat_initialize(state_in)
+            self._alm_dat_initialize(state_in, dt)
         else:
             self._penetration_free_truncation(state_in, contacts)
 
@@ -4134,9 +4124,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             launch_size=launch_size,
         )
 
-    def _alm_dat_initialize(self, state_in: State) -> None:
+    def _alm_dat_initialize(self, state_in: State, dt: float) -> None:
         """Start the step's certified anchor at the detection pose and truncate the inertial target."""
         self._alm_dat_iteration = 0
+        # the rows' penalty metric is their support: inverse masses reduced by the incident material
+        # Hessian (the host's attachment rule), evaluated once per step at the detection pose
+        compute_particle_material_hessian(
+            self.model,
+            dt,
+            self.pos_prev_collision_detection,
+            self.particle_q_prev,
+            self.particle_adjacency,
+            self._dat_material_hessian,
+        )
         # dropped detection records would leave pairs without planes: record it (the flag
         # only goes down within a step, so a second detection cannot hide a loss)
         self._dat_coverage.fill_(1)
@@ -4916,10 +4916,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.trimesh_collision_info,
                     self._dat_planes,
                     self._dat_alm_state,
+                    self._dat_material_hessian,
                     stiffness=self.model.soft_contact_ke,
                     radius=self.particle_self_contact_margin,
-                    rho_scale=self.particle_contact_alm_rho_scale,
-                    rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
                     hard_gap=self.particle_contact_alm_hard_gap,
                     transition_band=self.particle_contact_alm_transition_band,
                     wall_stiffness_ratio=self.particle_contact_alm_wall_stiffness_ratio,
@@ -5038,10 +5037,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.trimesh_collision_info,
                 self._dat_planes,
                 self._dat_alm_state,
+                self._dat_material_hessian,
                 stiffness=self.model.soft_contact_ke,
                 radius=self.particle_self_contact_margin,
-                rho_scale=self.particle_contact_alm_rho_scale,
-                rho_floor_ratio=self.particle_contact_alm_rho_floor_ratio,
                 hard_gap=self.particle_contact_alm_hard_gap,
                 transition_band=self.particle_contact_alm_transition_band,
                 wall_stiffness_ratio=self.particle_contact_alm_wall_stiffness_ratio,

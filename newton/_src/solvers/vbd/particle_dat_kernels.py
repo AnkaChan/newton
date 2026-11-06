@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...geometry import ParticleFlags
 from ...geometry.kernels import EE_PAIR_OVERFLOW, VT_PAIR_OVERFLOW, triangle_closest_point
 from ...geometry.tri_mesh_collision import TriMeshCollisionInfo
+from ...utils.mesh import MeshAdjacencyData, get_vertex_adjacent_spring_id, get_vertex_num_adjacent_springs
+from .particle_vbd_kernels import accumulate_elasticity_force_and_hessian, evaluate_spring_force_and_hessian
 from .rigid_vbd_kernels import (
     dat_separation_epsilon,
     find_edge_edge_separator,
@@ -560,16 +563,140 @@ def commit_truncated_displacement(
 
 
 @wp.func
-def contact_alm_rho(rho_inertia: float, stiffness: float, rho_scale: float, floor_ratio: float):
-    """Effective ALM metric: scaled inertia metric, floored at ``floor_ratio * K``.
+def _effective_inverse_mass_along(inv_mass: float, material_hessian: wp.mat33, direction: wp.vec3, dt: float):
+    """Inverse mass of a particle along ``direction``, reduced by its incident material
+    stiffness along that direction: ``w / (1 + dt^2 w (d^T H d))``. This is the rigid
+    contact rule ``D_b + S_b`` for a particle: the inertial stiffness along the row axis in
+    series with the material stiffness along it. A free particle keeps its inertia."""
+    stiffness_along = wp.max(wp.dot(direction, material_hessian * direction), 0.0)
+    return inv_mass / (1.0 + dt * dt * inv_mass * stiffness_along)
 
-    At the plain inertia scale a soft cloth's contact rows have rho far below K,
-    so a sweep transmits mostly the stale multiplier through a tiny Hessian and
-    the coupled VBD iteration can pump lateral oscillations. The floor keeps the
-    in-sweep response at least half penalty-like (s <= 1/2 when the ratio is 1)
-    while the converged force stays rho-free.
+
+@wp.func
+def _row_metrics(mobility_n: float, mobility_plain: float, dt: float):
+    """The row's two penalty metrics, the rigid contact rule applied to a soft pair.
+
+    Normal: the pair's support along the plane normal, each participant's inertia in
+    series with its material stiffness along ``n`` (``_effective_inverse_mass_along``).
+    Tangent: the pair's inertial support alone, as the rigid rule's tangent scale for a
+    body without structural rows; the material does not hold a cloth particle in place
+    along the surface, and a stiffer tangent metric makes the capped friction
+    multiplier chatter (incline test, 2026-11-06).
     """
-    return wp.max(rho_inertia * rho_scale, floor_ratio * stiffness)
+    rho_n = float(0.0)
+    if mobility_n > 0.0:
+        rho_n = 1.0 / (dt * dt * mobility_n)
+    rho_t = float(0.0)
+    if mobility_plain > 0.0:
+        rho_t = 1.0 / (dt * dt * mobility_plain)
+    return rho_n, rho_t
+
+
+@wp.kernel
+def _particle_material_hessian_kernel(
+    dt: float,
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    particle_flags: wp.array[int],
+    adjacency: MeshAdjacencyData,
+    tri_indices: wp.array2d[wp.int32],
+    tri_poses: wp.array[wp.mat22],
+    tri_areas: wp.array[float],
+    tri_materials: wp.array2d[float],
+    edge_indices: wp.array2d[wp.int32],
+    edge_rest_angles: wp.array[float],
+    edge_rest_lengths: wp.array[float],
+    edge_bending_properties: wp.array2d[float],
+    tet_indices: wp.array2d[wp.int32],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+    material_hessian: wp.array[wp.mat33],
+):
+    """Each particle's incident material Hessian (membrane, bending, tets, springs), the
+    stiffness the contact rows see along their axis."""
+    p = wp.tid()
+    material_hessian[p] = wp.mat33(0.0)
+    if inv_mass[p] <= 0.0 or not particle_flags[p] & ParticleFlags.ACTIVE:
+        return
+    material_h = wp.mat33(0.0)
+    _f, material_h = accumulate_elasticity_force_and_hessian(
+        p,
+        dt,
+        pos_prev,
+        pos,
+        tri_indices,
+        tri_poses,
+        tri_materials,
+        tri_areas,
+        edge_indices,
+        edge_rest_angles,
+        edge_rest_lengths,
+        edge_bending_properties,
+        tet_indices,
+        tet_poses,
+        tet_materials,
+        adjacency,
+        wp.vec3(0.0),
+        material_h,
+    )
+    spring_count = int(0)
+    if spring_indices.shape[0] > 0:
+        spring_count = get_vertex_num_adjacent_springs(adjacency, p)
+    for j in range(spring_count):
+        spring = get_vertex_adjacent_spring_id(adjacency, p, j)
+        _f, h = evaluate_spring_force_and_hessian(
+            p,
+            spring,
+            dt,
+            pos,
+            pos_prev,
+            spring_indices,
+            spring_rest_length,
+            spring_stiffness,
+            spring_damping,
+        )
+        material_h += h
+    material_hessian[p] = material_h
+
+
+def compute_particle_material_hessian(
+    model, dt: float, pos: wp.array, pos_prev: wp.array, adjacency, material_hessian: wp.array
+) -> None:
+    """Fill ``material_hessian`` with each particle's incident material Hessian."""
+    wp.launch(
+        _particle_material_hessian_kernel,
+        dim=model.particle_count,
+        inputs=[
+            float(dt),
+            pos,
+            pos_prev,
+            model.particle_inv_mass,
+            model.particle_flags,
+            adjacency,
+            model.tri_indices,
+            model.tri_poses,
+            model.tri_areas,
+            model.tri_materials,
+            model.edge_indices,
+            model.edge_rest_angle,
+            model.edge_rest_length,
+            model.edge_bending_properties,
+            model.tet_indices,
+            model.tet_poses,
+            model.tet_materials,
+            model.spring_indices,
+            model.spring_rest_length,
+            model.spring_stiffness,
+            model.spring_damping,
+        ],
+        outputs=[material_hessian],
+        device=model.device,
+    )
 
 
 @wp.func
@@ -790,6 +917,7 @@ def _vertex_triangle_row_geometry(
     pos: wp.array[wp.vec3],
     pos_prev: wp.array[wp.vec3],
     inv_mass: wp.array[float],
+    material_hessian: wp.array[wp.mat33],
     tri_indices: wp.array2d[wp.int32],
     n: wp.vec3,
     dt: float,
@@ -821,13 +949,17 @@ def _vertex_triangle_row_geometry(
     gap = wp.dot(n, diff)
     witness_prev = bary[0] * pos_prev[ia] + bary[1] * pos_prev[ib] + bary[2] * pos_prev[ic]
     rel = (pos[v] - pos_prev[v]) - (witness - witness_prev)
-    mobility = inv_mass[v]
+    # the row's penalty metric is its support along its axis (the rigid contact rule): each
+    # participant's inertia along n in series with its material stiffness along n
+    mobility_n = _effective_inverse_mass_along(inv_mass[v], material_hessian[v], n, dt)
+    mobility_plain = inv_mass[v]
     for k in range(3):
-        mobility += bary[k] * bary[k] * inv_mass[tri_indices[tri, k]]
-    rho = float(0.0)
-    if mobility > 0.0:
-        rho = 1.0 / (dt * dt * mobility)
-    return direction, gap, bary, rho, rel
+        kk = tri_indices[tri, k]
+        wk = bary[k] * bary[k]
+        mobility_n += wk * _effective_inverse_mass_along(inv_mass[kk], material_hessian[kk], n, dt)
+        mobility_plain += wk * inv_mass[kk]
+    rho, rho_t = _row_metrics(mobility_n, mobility_plain, dt)
+    return direction, gap, bary, rho, rho_t, rel
 
 
 @wp.func
@@ -837,6 +969,7 @@ def _edge_edge_row_geometry(
     pos: wp.array[wp.vec3],
     pos_prev: wp.array[wp.vec3],
     inv_mass: wp.array[float],
+    material_hessian: wp.array[wp.mat33],
     edge_indices: wp.array2d[wp.int32],
     n: wp.vec3,
     dt: float,
@@ -871,16 +1004,19 @@ def _edge_edge_row_geometry(
     c1_prev = pos_prev[i1a] + (pos_prev[i1b] - pos_prev[i1a]) * s
     c2_prev = pos_prev[i2a] + (pos_prev[i2b] - pos_prev[i2a]) * t
     rel = (c1 - c1_prev) - (c2 - c2_prev)
-    mobility = (
-        (1.0 - s) * (1.0 - s) * inv_mass[i1a]
-        + s * s * inv_mass[i1b]
-        + (1.0 - t) * (1.0 - t) * inv_mass[i2a]
-        + t * t * inv_mass[i2b]
+    w1a = (1.0 - s) * (1.0 - s)
+    w1b = s * s
+    w2a = (1.0 - t) * (1.0 - t)
+    w2b = t * t
+    mobility_n = (
+        w1a * _effective_inverse_mass_along(inv_mass[i1a], material_hessian[i1a], n, dt)
+        + w1b * _effective_inverse_mass_along(inv_mass[i1b], material_hessian[i1b], n, dt)
+        + w2a * _effective_inverse_mass_along(inv_mass[i2a], material_hessian[i2a], n, dt)
+        + w2b * _effective_inverse_mass_along(inv_mass[i2b], material_hessian[i2b], n, dt)
     )
-    rho = float(0.0)
-    if mobility > 0.0:
-        rho = 1.0 / (dt * dt * mobility)
-    return direction, gap, s, t, rho, rel
+    mobility_plain = w1a * inv_mass[i1a] + w1b * inv_mass[i1b] + w2a * inv_mass[i2a] + w2b * inv_mass[i2b]
+    rho, rho_t = _row_metrics(mobility_n, mobility_plain, dt)
+    return direction, gap, s, t, rho, rho_t, rel
 
 
 @wp.func
@@ -890,12 +1026,11 @@ def _alm_contact_response(
     n: wp.vec3,
     lam: float,
     lambda_t: wp.vec3,
-    rho_inertia: float,
+    rho: float,
+    rho_t: float,
     dt: float,
     stiffness: float,
     radius: float,
-    rho_scale: float,
-    rho_floor_ratio: float,
     hard_gap: float,
     transition_band: float,
     wall_stiffness_ratio: float,
@@ -909,7 +1044,6 @@ def _alm_contact_response(
     and the ALM row's transmitted force alone (the next normal multiplier and the
     friction budget).
     """
-    rho = contact_alm_rho(rho_inertia, stiffness, rho_scale, rho_floor_ratio)
     transmitted, k = alm_contact_row_smooth(
         gap - hard_gap, lam, stiffness, radius - hard_gap, rho, transition_band, wall_stiffness_ratio
     )
@@ -923,9 +1057,7 @@ def _alm_contact_response(
     if friction_mu > 0.0 and transmitted > 0.0:
         # the tangential metric stays at the inertia scale: with the stiffness floor a
         # row saturates its Coulomb disk after microns of slip and acts as kinetic friction
-        friction_force, friction_jacobian = alm_friction_row(
-            lambda_t, rho_inertia * rho_scale, rel, n, friction_mu * transmitted
-        )
+        friction_force, friction_jacobian = alm_friction_row(lambda_t, rho_t, rel, n, friction_mu * transmitted)
     return normal_force, normal_stiffness, friction_force, friction_jacobian, transmitted
 
 
@@ -937,6 +1069,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     pos_prev: wp.array[wp.vec3],
     particle_colors: wp.array[int],
     inv_mass: wp.array[float],
+    material_hessian: wp.array[wp.mat33],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     collision_info: TriMeshCollisionInfo,
@@ -944,8 +1077,6 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     alm: ParticleContactAlmState,
     stiffness: float,
     radius: float,
-    rho_scale: float,
-    rho_floor_ratio: float,
     hard_gap: float,
     transition_band: float,
     wall_stiffness_ratio: float,
@@ -960,7 +1091,7 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
     the current color (one thread per stored record): the slack-gap normal row,
     gap-rate damping while the pair is within the margin, and Coulomb friction as
     a tangential multiplier capped at ``friction_mu`` times the row's normal force.
-    ``rho_scale`` and ``rho_floor_ratio`` shape the row's ALM metric; ``hard_gap``
+    the row's ALM metric is its support along its axis (``_effective_inverse_mass_along``); ``hard_gap``
     is the thickness at which the hard wall sits above the stored division plane,
     so a loaded contact rests on the wall and never touches the safety plane; the
     cushion spans ``hard_gap`` to ``radius``. A vertex with signed weight ``w``
@@ -975,8 +1106,8 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
         if planes.ee_valid[i] == 1:
             e1 = collision_info.edge_colliding_edges[2 * i]
             e2 = collision_info.edge_colliding_edges[2 * i + 1]
-            n, gap, s, t, rho_inertia, rel = _edge_edge_row_geometry(
-                e1, e2, pos, pos_prev, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
+            n, gap, s, t, rho_inertia, rho_t, rel = _edge_edge_row_geometry(
+                e1, e2, pos, pos_prev, inv_mass, material_hessian, edge_indices, planes.ee_normal[i], dt, parallel_eps
             )
             normal_force, normal_stiffness, friction_force, friction_jacobian, _transmitted = _alm_contact_response(
                 gap,
@@ -985,11 +1116,10 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
                 alm.ee_lambda[i],
                 alm.ee_lambda_t[i],
                 rho_inertia,
+                rho_t,
                 dt,
                 stiffness,
                 radius,
-                rho_scale,
-                rho_floor_ratio,
                 hard_gap,
                 transition_band,
                 wall_stiffness_ratio,
@@ -1028,8 +1158,8 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
         if planes.vt_valid[i] == 1:
             v = collision_info.vertex_colliding_triangles[2 * i]
             tri = collision_info.vertex_colliding_triangles[2 * i + 1]
-            n, gap, bary, rho_inertia, rel = _vertex_triangle_row_geometry(
-                v, tri, pos, pos_prev, inv_mass, tri_indices, planes.vt_normal[i], dt
+            n, gap, bary, rho_inertia, rho_t, rel = _vertex_triangle_row_geometry(
+                v, tri, pos, pos_prev, inv_mass, material_hessian, tri_indices, planes.vt_normal[i], dt
             )
             normal_force, normal_stiffness, friction_force, friction_jacobian, _transmitted = _alm_contact_response(
                 gap,
@@ -1038,11 +1168,10 @@ def _accumulate_alm_contact_force_and_hessian_kernel(
                 alm.vt_lambda[i],
                 alm.vt_lambda_t[i],
                 rho_inertia,
+                rho_t,
                 dt,
                 stiffness,
                 radius,
-                rho_scale,
-                rho_floor_ratio,
                 hard_gap,
                 transition_band,
                 wall_stiffness_ratio,
@@ -1069,14 +1198,13 @@ def _update_alm_contact_multipliers_kernel(
     pos: wp.array[wp.vec3],
     pos_prev: wp.array[wp.vec3],
     inv_mass: wp.array[float],
+    material_hessian: wp.array[wp.mat33],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     stiffness: float,
     radius: float,
-    rho_scale: float,
-    rho_floor_ratio: float,
     hard_gap: float,
     transition_band: float,
     wall_stiffness_ratio: float,
@@ -1097,10 +1225,10 @@ def _update_alm_contact_multipliers_kernel(
         if planes.ee_valid[i] == 1:
             e1 = collision_info.edge_colliding_edges[2 * i]
             e2 = collision_info.edge_colliding_edges[2 * i + 1]
-            n, gap, _s, _t, rho_inertia, rel = _edge_edge_row_geometry(
-                e1, e2, pos, pos_prev, inv_mass, edge_indices, planes.ee_normal[i], dt, parallel_eps
+            n, gap, _s, _t, rho_inertia, rho_t, rel = _edge_edge_row_geometry(
+                e1, e2, pos, pos_prev, inv_mass, material_hessian, edge_indices, planes.ee_normal[i], dt, parallel_eps
             )
-            rho = contact_alm_rho(rho_inertia, stiffness, rho_scale, rho_floor_ratio)
+            rho = rho_inertia
             force, _k = alm_contact_row_smooth(
                 gap - hard_gap,
                 alm.ee_lambda[i],
@@ -1111,9 +1239,7 @@ def _update_alm_contact_multipliers_kernel(
                 wall_stiffness_ratio,
             )
             alm.ee_lambda[i] = force
-            lambda_t, _jacobian = alm_friction_row(
-                alm.ee_lambda_t[i], rho_inertia * rho_scale, rel, n, friction_mu * force
-            )
+            lambda_t, _jacobian = alm_friction_row(alm.ee_lambda_t[i], rho_t, rel, n, friction_mu * force)
             alm.ee_lambda_t[i] = lambda_t
         i += stride
 
@@ -1124,10 +1250,10 @@ def _update_alm_contact_multipliers_kernel(
         if planes.vt_valid[i] == 1:
             v = collision_info.vertex_colliding_triangles[2 * i]
             tri = collision_info.vertex_colliding_triangles[2 * i + 1]
-            n, gap, _bary, rho_inertia, rel = _vertex_triangle_row_geometry(
-                v, tri, pos, pos_prev, inv_mass, tri_indices, planes.vt_normal[i], dt
+            n, gap, _bary, rho_inertia, rho_t, rel = _vertex_triangle_row_geometry(
+                v, tri, pos, pos_prev, inv_mass, material_hessian, tri_indices, planes.vt_normal[i], dt
             )
-            rho = contact_alm_rho(rho_inertia, stiffness, rho_scale, rho_floor_ratio)
+            rho = rho_inertia
             force, _k = alm_contact_row_smooth(
                 gap - hard_gap,
                 alm.vt_lambda[i],
@@ -1138,9 +1264,7 @@ def _update_alm_contact_multipliers_kernel(
                 wall_stiffness_ratio,
             )
             alm.vt_lambda[i] = force
-            lambda_t, _jacobian = alm_friction_row(
-                alm.vt_lambda_t[i], rho_inertia * rho_scale, rel, n, friction_mu * force
-            )
+            lambda_t, _jacobian = alm_friction_row(alm.vt_lambda_t[i], rho_t, rel, n, friction_mu * force)
             alm.vt_lambda_t[i] = lambda_t
         i += stride
 
@@ -1208,11 +1332,10 @@ def accumulate_alm_contact_force_and_hessian(
     collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     alm: ParticleContactAlmState,
+    material_hessian: wp.array,
     *,
     stiffness: float,
     radius: float,
-    rho_scale: float,
-    rho_floor_ratio: float,
     hard_gap: float,
     transition_band: float = 0.0,
     wall_stiffness_ratio: float = 9.0,
@@ -1234,6 +1357,7 @@ def accumulate_alm_contact_force_and_hessian(
             pos_prev,
             model.particle_colors,
             model.particle_inv_mass,
+            material_hessian,
             model.tri_indices,
             model.edge_indices,
             collision_info,
@@ -1241,8 +1365,6 @@ def accumulate_alm_contact_force_and_hessian(
             alm,
             float(stiffness),
             float(radius),
-            float(rho_scale),
-            float(rho_floor_ratio),
             float(hard_gap),
             float(transition_band),
             float(wall_stiffness_ratio),
@@ -1264,11 +1386,10 @@ def update_alm_contact_multipliers(
     collision_info: TriMeshCollisionInfo,
     planes: ParticleContactDatPlanes,
     alm: ParticleContactAlmState,
+    material_hessian: wp.array,
     *,
     stiffness: float,
     radius: float,
-    rho_scale: float,
-    rho_floor_ratio: float,
     hard_gap: float,
     transition_band: float = 0.0,
     wall_stiffness_ratio: float = 9.0,
@@ -1285,14 +1406,13 @@ def update_alm_contact_multipliers(
             pos,
             pos_prev,
             model.particle_inv_mass,
+            material_hessian,
             model.tri_indices,
             model.edge_indices,
             collision_info,
             planes,
             float(stiffness),
             float(radius),
-            float(rho_scale),
-            float(rho_floor_ratio),
             float(hard_gap),
             float(transition_band),
             float(wall_stiffness_ratio),
