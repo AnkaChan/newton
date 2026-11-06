@@ -43,7 +43,10 @@ PARAMS = {
     "fps": 60,
     "num_frames": 720,
     "sim_substeps": 10,
-    "solver_iterations": 10,
+    # 20 iterations: with the soft contacts below the thread slack still changes velocity by 3 to 4 mm/s per frame
+    # at 10 iterations and by 1 mm/s at 20 (the tuning guide's last-resort knob). 10 iterations give a 3 times
+    # faster run with a visibly rougher thread.
+    "solver_iterations": 20,
     # tissue
     "block_cells": (14, 10, 4),
     "cell": 3.0e-3,
@@ -72,10 +75,12 @@ PARAMS = {
     "thread_stretch_damping": 0.02,
     "thread_bend_damping": 5.0e-9,
     # Contact material of the thread and needle shapes (averaged with the soft side for rigid-soft contact).
-    # The thread's 2e3 N/m joints set its scale: a contact 10 times stiffer than them jitters (tuning guide).
+    # The 0.2 mg thread capsules set the scale: with the rigid-soft contact at 3e3 N/m (the mean of both sides)
+    # the slack shivered on the tissue (velocity changes of 10 mm/s per frame); at 300 N/m it rests (3 to 4 mm/s at
+    # 10 iterations, 1 mm/s at 20). Contact damping above 1 percent of the stiffness made it worse again.
     "thread_mu": 0.1,
-    "thread_contact_ke": 1.0e3,
-    "thread_contact_kd": 10.0,
+    "thread_contact_ke": 1.0e2,
+    "thread_contact_kd": 1.0,
     "needle_mu": 0.2,
     # Free end of the thread: clamped on top of the right block, 22 mm past the exit and 10 mm beside the needle
     # plane. The route from the needle tail to the clamp lays the slack (about 70 mm in all) on that block.
@@ -94,9 +99,10 @@ PARAMS = {
     # contact
     "rigid_gap": 1.0e-3,
     "soft_contact_gap": 1.0e-3,
-    # Within 10x of the tissue shear stiffness (34 kPa) and of the thread joints, with 1 percent damping.
-    "soft_contact_ke": 5.0e3,
-    "soft_contact_kd": 50.0,
+    # Soft enough for the 0.2 mg thread capsules (see thread_contact_ke); the needle indents the tissue by 0.2 mm
+    # at the 0.1 N puncture force and DAT keeps every contact penetration-free. Damping 1 percent of the stiffness.
+    "soft_contact_ke": 5.0e2,
+    "soft_contact_kd": 5.0,
     "soft_contact_mu": 0.3,
     "self_contact_margin": 1.0e-3,
     "self_contact_gap": 1.0e-3,
