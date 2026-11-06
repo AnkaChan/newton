@@ -93,7 +93,19 @@ A tunnel whose tip leaves through a boundary face before one tunnel point spacin
 _Avoid_: false tunnel, spurious tunnel
 
 **Gripper**:
-A kinematic jaw pair that holds the outer part of a tissue piece through hard particle-body attachments; opening a gripper switches its attachments off. Demo scene of 2026-11-06 (I25).
+A kinematic jaw pair that holds the outer part of a tissue piece through hard particle-body attachments; opening a gripper switches its attachments off. Demo scene of 2026-11-06 (I25). In the pull-to-close scene the right lower jaw also collides with the tissue and carries the block after the upper jaw opens (I30).
+
+**Pull-to-close**:
+The demo phase after the last stitch in which the holder pulls the needle away under a force cap so the thread tightens and draws the right block along its lower jaw until the wound edges meet; the lower jaw then withdraws and the block hangs. Replaces the jaw approximation. Anka, 2026-11-06 (I30).
+_Avoid_: approximate (the former jaw push), tighten (the earlier timed pull)
+
+**Row tangent**:
+The rod tangent that defines the transverse plane of a tunnel point row. Default: the direction of the closest capsule, which jumps at a kinked joint. With `suture_smooth_tangent` it is continuous: the bisector of the two capsules at a joint, interpolated along a capsule. Fork of the row design, 2026-11-06 (I29).
+_Avoid_: smoothed curve, spline tangent
+
+**Disjoint block colours**:
+A particle colouring in which two tissue pieces that touch share no colour, so a vertex of one wound face is never updated in the same Gauss-Seidel pass as the face vertex it is in self-contact with; the demo builds it from `builder.color()` by splitting every colour group per block. 2026-11-06 (I31).
+_Avoid_: recolouring, contact-aware colouring (not implemented in the solver)
 
 **Clamped end**:
 The thread's free end fixed to a static body as the first milestone's stand-in for a knot, so pulling the needle end tightens the stitch.

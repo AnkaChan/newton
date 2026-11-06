@@ -11,10 +11,11 @@ pierces the right block and exits through its top, then hops to the next stitch.
 Every bite opens a virtual tunnel of tunnel points in the tetrahedral tissue; the
 needle and the thread slide through the tunnels with capped friction. The free end
 of the thread is clamped beside the far corner of the left block and its slack
-hangs below the blocks on the far side, out of the needle's way. After the last
-stitch both grippers bring the wound edges together, and the right gripper opens
-and withdraws: the right block hangs from the stitches, which the hanging weight
-tensions.
+hangs beside the blocks on the far side, out of the needle's way. After the last
+stitch the right gripper opens its upper jaw, so the right block rests on the lower
+jaw, and the holder pulls the needle away: the thread tightens and draws the right
+block along the jaw until the wound edges meet. The lower jaw then withdraws and
+the right block hangs from the stitches, which the hanging weight tensions.
 
 Success criteria (test mode, ``test_final``): the state is finite, the needle opens
 two through tunnels per stitch, the needle group penetrates ungated tissue by less
@@ -29,7 +30,7 @@ not asserted.
 
 Runs:
 - `python -m newton.examples vbd_suture`
-- `python -m newton.examples vbd_suture --stitches 1 --num-frames 720`
+- `python -m newton.examples vbd_suture --stitches 1 --num-frames 886`
 """
 
 from __future__ import annotations
@@ -63,11 +64,15 @@ PARAMS = {
     # to 0.9 mm in the first 0.2 s, because the damping Hessian k_damp / dt exceeds the elastic stiffness).
     "tissue_damping": 0.0,
     "particle_radius": 5.0e-4,
-    # grippers: every particle farther than grip_offset from the wound is attached to a kinematic jaw, so each block
-    # is a flat 12 mm cantilever at the wound and does not sag under its own weight
+    # grippers: every particle farther than grip_offset from the wound is attached to the kinematic upper jaw, so
+    # each block is a flat 12 mm cantilever at the wound and does not sag under its own weight. The right lower
+    # jaw also collides with the tissue (friction jaw_mu): it carries the block after the upper jaw opens and the
+    # block slides along it when the thread pulls. Its clearance equals the contact gap plus the particle radius,
+    # so the block rests on it without a drop and without a contact force while it is still gripped.
     "grip_offset": 12.0e-3,
     "jaw_half_thickness": 1.5e-3,
     "jaw_clearance": 1.0e-3,
+    "jaw_mu": 0.2,
     "open_dz": 20.0e-3,
     "open_dx": 60.0e-3,
     "floor_top": -0.10,
@@ -96,18 +101,23 @@ PARAMS = {
     "thread_contact_kd": 1.0,
     "needle_mu": 0.2,
     # Free end of the thread: clamped beside the far corner of the left block. The route from the needle tail runs
-    # to the far side (+y), down below the blocks, and back up to the clamp, so about 160 mm of slack hangs in the
-    # air where neither the needle nor the stitches can catch it. The y values are offsets from the first stitch.
+    # to the far side (+y), down beside the blocks, and back up to the clamp, where neither the needle nor the
+    # stitches can catch it. The y values are offsets from the first stitch and keep the loop and the clamp at
+    # least 2 mm beyond the jaws (y = 17 mm) for a single stitch. The route below is the one-stitch route
+    # (97 mm); its three low points drop by half of thread_slack_per_stitch for every further stitch, since
+    # each stitch with its bridge draws about 30 mm, so that 10 to 30 mm of slack remains after the last bite and
+    # the pull can tighten the thread within its travel.
     # Rest shape of the thread: False keeps the initial route as the rest shape (its corners travel through the
     # tunnels as rest kinks), True makes the rest shape straight (zero intrinsic bend and twist).
-    "thread_rest_straight": False,
-    "clamp_position": (-0.046, 0.011, 0.010),
+    "thread_rest_straight": True,
+    "clamp_position": (-0.046, 0.019, 0.010),
     "thread_route": (
-        (0.010, 0.011, 0.026),
-        (0.010, 0.013, -0.030),
-        (-0.015, 0.015, -0.034),
-        (-0.040, 0.013, -0.030),
+        (0.010, 0.019, 0.026),
+        (0.010, 0.021, 0.010),
+        (-0.015, 0.023, 0.006),
+        (-0.040, 0.021, 0.010),
     ),
+    "thread_slack_per_stitch": 0.024,
     # holder drive
     "drive_linear_ke": 1.0e4,
     "drive_linear_kd": 1.0e2,
@@ -116,12 +126,27 @@ PARAMS = {
     # contact
     "rigid_gap": 1.0e-3,
     "soft_contact_gap": 1.0e-3,
+    "full_surface_contact": True,
     # Within 10x of the tissue shear stiffness (34 kPa) and of the thread joints, with 1 percent damping.
     "soft_contact_ke": 5.0e2,
     "soft_contact_kd": 5.0,
     "soft_contact_mu": 0.3,
+    # Self-contact between the two wound faces: the solver reads Model.soft_contact_ke/kd for it and averages the
+    # same values with the shape material for particle-shape contacts; the shape materials below are set so the
+    # particle-shape averages stay at soft_contact_ke/kd (and at the thread values for the thread) whatever the
+    # self-contact values are.
+    "self_contact_ke": 5.0e2,
+    "self_contact_kd": 5.0,
+    "self_contact": True,
     "self_contact_margin": 1.0e-3,
     "self_contact_gap": 1.0e-3,
+    # 0: detect contacts before and after the inertial step of every substep (default). N > 0: detect before the
+    # inertial step and then before every N-th iteration (tuning guide, jitter protocol step 4); the rigid slot
+    # follows and the pipeline matches contacts between detections.
+    "detection_iterations": 0,
+    # True: the two blocks get disjoint particle color sets, so a vertex of one wound face is never updated in
+    # the same Gauss-Seidel color pass as the face vertex it is in self-contact with.
+    "separate_block_colors": True,
     # suture
     "tunnel_mu": 0.3,
     "grip": 1.0,
@@ -131,6 +156,9 @@ PARAMS = {
     # the tissue; 1e4 N/m bounds the force at about 10 N per millimetre of offset and keeps the thread within
     # about 1 mm of the tunnel points (notes/vbd-suture/decisions.md I18, I19 and I27).
     "tunnel_stiffness": 1.0e4,
+    # Continuous rod tangent for the rows (solver argument suture_smooth_tangent): with the segment direction the
+    # transverse plane of a row jumps when its closest place crosses a kinked joint (tunnel entry and exit).
+    "suture_smooth_tangent": True,
     "puncture_force": 0.1,
     "puncture_cos": 0.5,
     # holder script [s]
@@ -139,17 +167,15 @@ PARAMS = {
     "t_approach": 0.75,
     "t_bite": 5.0,
     "t_hop": 0.75,
-    # After the last stitch both grippers bring the wound edges together at approximate_speed per side while the
-    # gap is open (approximate), then the right gripper opens; the hanging block tensions the stitches. A tighten
-    # phase (t_pull > 0) pulls the needle toward pull_target_xz until the drive force rises by pull_force_max.
-    "t_approximate": 4.0,
-    "approximate_speed": 1.0e-3,
-    "approximate_gap": 0.3e-3,
-    # Each jaw moves at most this far toward the wound (half the gap plus a 0.5 mm press), so the tissue is
-    # brought together, not crushed, when tilted faces keep the mean gap above approximate_gap.
-    "approximate_travel_max": 2.5e-3,
-    "t_pull": 0.0,
-    "pull_force_max": 0.1,
+    # After the last stitch the right gripper opens its upper jaw (t_open_upper) and the block rests on the lower
+    # jaw. The holder then pulls the needle toward pull_target_xz at constant speed (t_pull) while the drive force
+    # stays below pull_force_max above its value at the start of the pull: the thread tightens, the slack of the
+    # bridges and of the free loop is drawn through the stitches, and the right block slides along its jaw until
+    # the wound edges meet, where the force rises to the cap and the pull holds. The lower jaw then withdraws
+    # (t_open) and the hanging block tensions the stitches (t_hold).
+    "t_open_upper": 0.5,
+    "t_pull": 5.0,
+    "pull_force_max": 0.15,
     "t_open": 0.5,
     "t_hold": 3.0,
     "bite_angle_deg": 360.0,
@@ -158,9 +184,10 @@ PARAMS = {
     # earlier stitches at its end (I27).
     "center_high": 0.040,
     "center_bite": 0.014,
-    # Tighten: the arc center moves toward this x and z (at the last stitch's y, over the left block) at constant
-    # speed while the holder drive force stays below pull_force_max, and holds otherwise.
-    "pull_target_xz": (-0.024, 0.024),
+    # Pull: the arc center moves toward this x and z (at the last stitch's y, up and over the left block) at
+    # constant speed while the holder drive force stays below pull_force_max, and holds otherwise. The 56 mm of
+    # travel exceed the slack to draw (bridges, free loop and the 4 mm gap: 20 to 40 mm).
+    "pull_target_xz": (-0.050, 0.040),
     # camera
     "camera_pos": (0.0, -0.21, 0.06),
     "camera_target": (0.0, 0.0, -0.008),
@@ -195,11 +222,11 @@ def schedule(stitches: int, p: dict | None = None) -> dict[str, float]:
     """Start times of the phases for ``stitches`` stitches [s]."""
     p = PARAMS if p is None else p
     stitch = p["t_approach"] + p["t_bite"] + p["t_hop"]
-    approximate = stitches * stitch - p["t_hop"]
-    pull_start = approximate + p["t_approximate"]
+    open_upper = stitches * stitch - p["t_hop"]
+    pull_start = open_upper + p["t_open_upper"]
     release = pull_start + p["t_pull"]
     end = release + p["t_open"] + p["t_hold"]
-    return {"stitch": stitch, "approximate": approximate, "pull_start": pull_start, "release": release, "end": end}
+    return {"stitch": stitch, "open_upper": open_upper, "pull_start": pull_start, "release": release, "end": end}
 
 
 def total_frames(stitches: int, p: dict | None = None) -> int:
@@ -228,20 +255,27 @@ class Example:
         self._build_grippers(builder)
         self._build_needle_and_thread(builder)
         builder.color()
+        if self.params["separate_block_colors"]:
+            (a0, a1), (b0, b1) = self.block_particle_ranges
+            groups = [np.asarray(g, dtype=int) for g in builder.particle_color_groups]
+            part_a = [g[(g >= a0) & (g < a1)] for g in groups]
+            part_b = [g[(g >= b0) & (g < b1)] for g in groups]
+            builder.set_coloring([g for g in part_a + part_b if len(g) > 0])
         self.model = builder.finalize()
 
         p = self.params
-        self.model.soft_contact_ke = p["soft_contact_ke"]
-        self.model.soft_contact_kd = p["soft_contact_kd"]
+        self.model.soft_contact_ke = p["self_contact_ke"]
+        self.model.soft_contact_kd = p["self_contact_kd"]
         self.model.soft_contact_mu = p["soft_contact_mu"]
-        self.model.shape_material_ke.fill_(p["soft_contact_ke"])
-        self.model.shape_material_kd.fill_(p["soft_contact_kd"])
+        # particle-shape contact uses the average of the model values and the shape material
+        self.model.shape_material_ke.fill_(2.0 * p["soft_contact_ke"] - p["self_contact_ke"])
+        self.model.shape_material_kd.fill_(2.0 * p["soft_contact_kd"] - p["self_contact_kd"])
         shape_body = self.model.shape_body.numpy()
         thread_shapes = np.flatnonzero(np.isin(shape_body, self.thread_bodies))
         ke = self.model.shape_material_ke.numpy()
         kd = self.model.shape_material_kd.numpy()
-        ke[thread_shapes] = p["thread_contact_ke"]
-        kd[thread_shapes] = p["thread_contact_kd"]
+        ke[thread_shapes] = p["soft_contact_ke"] + p["thread_contact_ke"] - p["self_contact_ke"]
+        kd[thread_shapes] = p["soft_contact_kd"] + p["thread_contact_kd"] - p["self_contact_kd"]
         self.model.shape_material_ke.assign(ke)
         self.model.shape_material_kd.assign(kd)
         self.model.vbd.suture_grip.fill_(p["grip"])
@@ -252,16 +286,32 @@ class Example:
 
         # Full-surface rigid-soft contact: the 0.3 mm thread lies between the 3 mm particle rows, so per-particle
         # contacts alone let it sink into the tissue; face and edge contacts hold it on the surface.
+        schedule_kwargs = {}
+        if p["detection_iterations"] > 0:
+            slot = newton.solvers.SolverBase.CollisionSlot
+            kind = newton.solvers.SolverBase.CollisionFrequencyType
+            schedule_kwargs = {
+                "collision_frequency_type": {slot.SOFT_SELF_CONTACT: kind.ITERATIONS, slot.RIGID: kind.ITERATIONS},
+                "collision_frequency": {
+                    slot.SOFT_SELF_CONTACT: p["detection_iterations"],
+                    slot.RIGID: p["detection_iterations"],
+                },
+            }
         self.collision_pipeline = newton.CollisionPipeline(
-            self.model, soft_contact_gap=p["soft_contact_gap"], enable_rigid_soft_full_surface_contact=True
+            self.model,
+            soft_contact_gap=p["soft_contact_gap"],
+            enable_rigid_soft_full_surface_contact=p["full_surface_contact"],
+            contact_matching="latest" if p["detection_iterations"] > 0 else "disabled",
         )
         self.solver = SolverVBD(
             self.model,
             iterations=p["solver_iterations"],
+            **schedule_kwargs,
             rigid_soft_enable_dat=True,
-            particle_enable_self_contact=True,
+            particle_enable_self_contact=p["self_contact"],
             particle_self_contact_margin=p["self_contact_margin"],
             particle_self_contact_gap=p["self_contact_gap"],
+            suture_smooth_tangent=p["suture_smooth_tangent"],
             collision_pipeline=self.collision_pipeline,
         )
         self.state_0 = self.model.state()
@@ -273,7 +323,7 @@ class Example:
         self.tunnels_seen = 0
         self.pull_progress = 0.0
         self.pull_force_base = None
-        self.approximate_shift = 0.0
+        self.upper_open = False
         self.released = False
         self.gap_before_release = None
         self._init_faces()
@@ -330,10 +380,15 @@ class Example:
 
     def _build_grippers(self, builder):
         """One gripper per block: every particle farther than grip_offset from the wound is tied to a kinematic
-        upper jaw by hard attachments; two visual jaw boxes (no collision) show the grip. The right one opens later."""
+        upper jaw by hard attachments; two jaw boxes show the grip. The right lower jaw also collides with the
+        tissue: it carries the block after the upper jaw opens and the block slides along it when the thread
+        pulls. The other jaws are visual."""
         p = self.params
         self.grippers = []
         cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=False)
+        support_cfg = newton.ModelBuilder.ShapeConfig(
+            density=0.0, has_shape_collision=False, has_particle_collision=True, mu=p["jaw_mu"]
+        )
         for block, (start, end) in enumerate(self.block_particle_ranges):
             q = np.array([[v[0], v[1], v[2]] for v in builder.particle_q[start:end]], dtype=np.float64)
             inward = 1.0 if block == 0 else -1.0  # from the facing face into the block
@@ -345,8 +400,10 @@ class Example:
             hx = 0.5 * float(q[slab, 0].max() - q[slab, 0].min()) + 1.0e-3
             hy = 0.5 * float(q[:, 1].max() - q[:, 1].min()) + 2.0e-3
             hz = p["jaw_half_thickness"]
+            supports = block == 1
+            lower_clearance = p["soft_contact_gap"] + p["particle_radius"] if supports else p["jaw_clearance"]
             upper_pos = np.array([cx, cy, float(q[:, 2].max()) + hz + p["jaw_clearance"]])
-            lower_pos = np.array([cx, cy, float(q[:, 2].min()) - hz - p["jaw_clearance"]])
+            lower_pos = np.array([cx, cy, float(q[:, 2].min()) - hz - lower_clearance])
             upper = builder.add_body(
                 xform=wp.transform(wp.vec3(*upper_pos), wp.quat_identity()), label=f"gripper_{block}_upper"
             )
@@ -354,7 +411,7 @@ class Example:
                 xform=wp.transform(wp.vec3(*lower_pos), wp.quat_identity()), label=f"gripper_{block}_lower"
             )
             builder.add_shape_box(upper, hx=hx, hy=hy, hz=hz, cfg=cfg)
-            builder.add_shape_box(lower, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            builder.add_shape_box(lower, hx=hx, hy=hy, hz=hz, cfg=support_cfg if supports else cfg)
             attachments = [
                 builder.add_attachment_particle_body(
                     int(start + i), upper, body_point=wp.vec3(*(q[i] - upper_pos)), stiffness=math.inf
@@ -424,7 +481,9 @@ class Example:
         tail_world = wp.transform_point(wp.transform(center, rot0), tail_local)
         shift = wp.vec3(0.0, y0, 0.0)
         clamp_world = wp.vec3(*p["clamp_position"]) + shift
-        route = [tail_world, *(wp.vec3(*q) + shift for q in p["thread_route"]), clamp_world]
+        drop = wp.vec3(0.0, 0.0, -0.5 * p["thread_slack_per_stitch"] * (self.stitches - 1))
+        low = [wp.vec3(*q) + shift + drop for q in p["thread_route"][1:]]
+        route = [tail_world, wp.vec3(*p["thread_route"][0]) + shift, *low, clamp_world]
         polyline, thread_length = _resample_polyline(route, p["thread_segment"])
         segments = len(polyline) - 1
         self.thread_length = thread_length
@@ -474,7 +533,7 @@ class Example:
         p = self.params
         psi_max = math.radians(p["bite_angle_deg"])
         high, bite = p["center_high"], p["center_bite"]
-        if t < self.times["approximate"]:
+        if t < self.times["open_upper"]:
             i = min(int(t // self.times["stitch"]), self.stitches - 1)
             tau = t - i * self.times["stitch"]
             y = self._stitch_y(i)
@@ -488,7 +547,7 @@ class Example:
             s = min((tau - p["t_bite"]) / p["t_hop"], 1.0)
             y_next = self._stitch_y(i + 1)
             return wp.transform(wp.vec3(0.0, y + (y_next - y) * s, bite + (high - bite) * s), _needle_rotation(psi_max))
-        # Approximate and tighten: the center moves toward the target as far as self.pull_progress allows.
+        # Pull: the center moves toward the target as far as self.pull_progress allows.
         y = self._stitch_y(self.stitches - 1)
         target = np.array([p["pull_target_xz"][0], y, p["pull_target_xz"][1]])
         start = np.array([0.0, y, bite])
@@ -518,40 +577,37 @@ class Example:
         if force - self.pull_force_base < p["pull_force_max"]:
             self.pull_progress = min(1.0, self.pull_progress + self.frame_dt / p["t_pull"])
 
-    def _release(self):
-        """Switch the right gripper's attachments off; the jaws then open and withdraw in _set_kinematics."""
-        self.gap_before_release = self.gap_width()
+    def _open_upper(self):
+        """Switch the right gripper's attachments off; the block rests on the lower jaw, the upper jaw lifts."""
         enabled = self.model.attachment_particle_body_enabled.numpy()
         enabled[self.grippers[1]["attachments"]] = 0
         self.model.attachment_particle_body_enabled.assign(enabled)
+        self.upper_open = True
+
+    def _release(self):
+        """Record the gap as the lower jaw starts to withdraw; the block then hangs from the stitches."""
+        self.gap_before_release = self.gap_width()
         self.released = True
 
     def _set_kinematics(self, t: float):
         p = self.params
         body_q = self.state_0.body_q.numpy()
         body_q[self.holder] = self._holder_pose(t)
-        if t >= self.times["approximate"]:
-            # both grippers move their blocks toward the wound at constant speed while the gap is open
-            if (
-                t < self.times["pull_start"]
-                and self.gap_width() > p["approximate_gap"]
-                and self.approximate_shift < p["approximate_travel_max"]
-            ):
-                self.approximate_shift += p["approximate_speed"] * self.frame_dt
-            for block, g in enumerate(self.grippers):
-                sign = 1.0 if block == 0 else -1.0
-                shift = np.array([sign * self.approximate_shift, 0.0, 0.0])
-                if block == 1 and t >= self.times["release"]:
-                    if not self.released:
-                        self._release()
-                    so = min((t - self.times["release"]) / p["t_open"], 1.0)
-                    upper = g["upper_pos"] + shift + np.array([p["open_dx"] * so, 0.0, p["open_dz"] * so])
-                    lower = g["lower_pos"] + shift + np.array([p["open_dx"] * so, 0.0, -p["open_dz"] * so])
-                else:
-                    upper = g["upper_pos"] + shift
-                    lower = g["lower_pos"] + shift
-                body_q[g["upper"]] = wp.transform(wp.vec3(*upper), wp.quat_identity())
-                body_q[g["lower"]] = wp.transform(wp.vec3(*lower), wp.quat_identity())
+        if t >= self.times["open_upper"]:
+            # the right upper jaw lifts and withdraws; the lower jaw carries the block until the release
+            g = self.grippers[1]
+            if not self.upper_open:
+                self._open_upper()
+            su = min((t - self.times["open_upper"]) / p["t_open_upper"], 1.0)
+            upper = g["upper_pos"] + np.array([p["open_dx"] * su, 0.0, p["open_dz"] * su])
+            lower = g["lower_pos"]
+            if t >= self.times["release"]:
+                if not self.released:
+                    self._release()
+                so = min((t - self.times["release"]) / p["t_open"], 1.0)
+                lower = g["lower_pos"] + np.array([p["open_dx"] * so, 0.0, -p["open_dz"] * so])
+            body_q[g["upper"]] = wp.transform(wp.vec3(*upper), wp.quat_identity())
+            body_q[g["lower"]] = wp.transform(wp.vec3(*lower), wp.quat_identity())
         self.state_0.body_q.assign(body_q)
 
     # ── stepping ────────────────────────────────────────────────────────

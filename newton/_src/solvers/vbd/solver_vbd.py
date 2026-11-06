@@ -525,6 +525,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         suture_armed: bool = False,  # True: the first tip contact punctures; False: force and angle test
         suture_closest_search_window: int = 1,  # Rod segments searched on each side of the cached segment per refresh
         suture_friction_transverse_weight: float = 0.0,  # Weight of the transverse multiplier in the friction cap (1 = contact law)
+        suture_smooth_tangent: bool = False,  # Continuous rod tangent for the rows (bisector at joints) instead of the segment direction
         deterministic: wp.DeterministicMode | None = None,
         enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
@@ -816,6 +817,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 (friction bounded by the normal force); ``0`` (default) bounds friction by the tissue grip
                 alone. A positive weight feeds tissue shear back into the cap and can drag tissue along a
                 straight needle; see the solver page.
+            suture_smooth_tangent: ``True`` gives every tunnel point a tangent that is continuous along
+                the rod curve (the bisector of the two capsules at a joint, interpolated along a capsule), so
+                the transverse plane of its row does not jump when the closest place crosses a kinked joint.
+                ``False`` (default) uses the direction of the closest capsule.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
@@ -1220,6 +1225,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             suture_armed,
             suture_closest_search_window,
             suture_friction_transverse_weight,
+            suture_smooth_tangent,
         )
 
         # Controls whether the next step() refreshes contact state derived from
@@ -3447,6 +3453,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         armed: bool,
         closest_search_window: int,
         friction_transverse_weight: float,
+        smooth_tangent: bool = False,
     ) -> None:
         """Allocate the tunnel point rows and the needle state of every suture needle.
 
@@ -3458,6 +3465,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.suture_armed = bool(armed)
         self.suture_closest_search_window = int(closest_search_window)
         self.suture_friction_transverse_weight = float(friction_transverse_weight)
+        self.suture_smooth_tangent = bool(smooth_tangent)
         self._suture_point_spacing = 0.0
         self._suture_gate_radius = np.zeros(0, dtype=np.float32)
         if self.suture_needle_count == 0:
@@ -3662,6 +3670,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             dim=self._suture_point_total,
             inputs=[
                 self.suture_closest_search_window,
+                1 if self.suture_smooth_tangent else 0,
                 self._suture_points,
                 self._suture_rod,
                 self._suture_tet_indices(),

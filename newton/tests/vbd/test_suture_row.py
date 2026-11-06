@@ -135,6 +135,78 @@ def test_finite_stiffness_row_is_compliant(test, device):
 devices = get_test_devices()
 
 
+def _kinked_scene(device, *, smooth_tangent, offsets):
+    """A kinematic L-shaped rod (down the z axis, then along x, corner at the origin) and one fixed tet whose
+    tunnel points sit at ``offsets`` from the corner."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    SolverVBD.register_custom_attributes(builder)
+    verts = _tet_points()
+    for v in verts:
+        builder.add_particle(pos=v, vel=wp.vec3(0.0), mass=0.0, radius=1.0e-4)
+    builder.add_tetrahedron(0, 2, 1, 3, k_mu=1.0, k_lambda=1.0, k_damp=0.0)
+    cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+    rod = builder.add_body(xform=wp.transform_identity())
+    half = 0.5 * ROD_HALF_HEIGHT
+    q_x = newton.math.quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
+    first = builder.add_shape_capsule(
+        rod,
+        xform=wp.transform(wp.vec3(0.0, 0.0, half), wp.quat_identity()),
+        radius=ROD_RADIUS,
+        half_height=half,
+        cfg=cfg,
+    )
+    builder.add_shape_capsule(
+        rod, xform=wp.transform(wp.vec3(half, 0.0, 0.0), q_x), radius=ROD_RADIUS, half_height=half, cfg=cfg
+    )
+    builder.add_suture_needle(
+        rod,
+        first,
+        centerline=[wp.vec3(0.0, 0.0, ROD_HALF_HEIGHT), wp.vec3(0.0), wp.vec3(ROD_HALF_HEIGHT, 0.0, 0.0)],
+    )
+    builder.color()
+    model = builder.finalize(skip_validation_inertia=True)
+    solver = SolverVBD(model, iterations=10, suture_point_spacing=1.0e-3, suture_smooth_tangent=smooth_tangent)
+    state_0 = model.state()
+    state_1 = model.state()
+    control = model.control()
+    # barycentric coordinates of each offset inside the regular tet, in the tet's vertex order (0, 2, 1, 3)
+    v = np.array([[verts[k][0], verts[k][1], verts[k][2]] for k in (0, 2, 1, 3)], dtype=np.float64)
+    a = np.vstack([v.T, np.ones(4)])
+    barys = []
+    for x in offsets:
+        b = np.linalg.solve(a, np.array([x[0], x[1], x[2], 1.0]))
+        barys.append(wp.vec4(*b))
+    solver.suture_set_points(0, 0, [0] * len(offsets), barys, state=state_0, ds=1.0e-3)
+    return solver, state_0, state_1, control
+
+
+def test_smooth_tangent_is_continuous_at_a_kink(test, device):
+    """At a 90 degree joint the segment tangent jumps between the two capsule directions; the smooth tangent
+    is the bisector on both sides of the joint and the capsule direction far from it."""
+    bisector = np.array([1.0, 0.0, -1.0]) / np.sqrt(2.0)
+    before = (-1.0e-3, 0.0, 0.2e-3)  # beside the first capsule, 0.2 mm above the corner
+    after = (0.2e-3, 0.0, -1.0e-3)  # beside the second capsule, 0.2 mm past the corner
+    with wp.ScopedDevice(device):
+        solver, s0, s1, control = _kinked_scene(device, smooth_tangent=False, offsets=[before, after])
+        solver.step(s0, s1, control, None, DT)
+        t = solver._suture_point_tangent.numpy()[:2]
+        np.testing.assert_allclose(t[0], [0.0, 0.0, -1.0], atol=1.0e-5)
+        np.testing.assert_allclose(t[1], [1.0, 0.0, 0.0], atol=1.0e-5)
+        solver, s0, s1, control = _kinked_scene(device, smooth_tangent=True, offsets=[before, after])
+        solver.step(s0, s1, control, None, DT)
+        t = solver._suture_point_tangent.numpy()[:2]
+        for k in range(2):
+            test.assertGreater(float(np.dot(t[k], bisector)), np.cos(np.radians(3.0)))
+        test.assertLess(float(np.linalg.norm(t[0] - t[1])), 0.1)
+        # at the far end of the first capsule the smooth tangent is the capsule direction
+        solver, s0, s1, control = _kinked_scene(
+            device, smooth_tangent=True, offsets=[(-1.0e-3, 0.0, ROD_HALF_HEIGHT - 0.2e-3)]
+        )
+        solver.step(s0, s1, control, None, DT)
+        t = solver._suture_point_tangent.numpy()[0]
+        test.assertGreater(float(np.dot(t, [0.0, 0.0, -1.0])), np.cos(np.radians(3.0)))
+
+
 class TestSutureRow(NewtonTestCase):
     def setUp(self):
         self.allowOutputRegex(r"^Module .* load on device .*\n?", stream="stdout")
@@ -165,6 +237,12 @@ add_function_test(
     TestSutureRow,
     "test_finite_stiffness_row_is_compliant",
     test_finite_stiffness_row_is_compliant,
+    devices=devices,
+)
+add_function_test(
+    TestSutureRow,
+    "test_smooth_tangent_is_continuous_at_a_kink",
+    test_smooth_tangent_is_continuous_at_a_kink,
     devices=devices,
 )
 

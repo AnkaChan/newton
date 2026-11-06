@@ -935,7 +935,11 @@ on the rod curve, the tangent :math:`\mathbf{t}` and :math:`\mathbf{P} =
    \boldsymbol{\lambda}_\perp \leftarrow \mathbf{P}\,(\boldsymbol{\lambda}_\perp + \rho\,\mathbf{C}),
 
 where the row stiffness is the smallest ``vbd.suture_stiffness`` of the tet's
-four vertices. The default is infinite, so :math:`k_{\text{eff}} = \rho` with
+four vertices. The tangent is the direction of the closest capsule; with
+``suture_smooth_tangent=True`` it is continuous along the curve (the bisector
+of the two capsules at a joint, interpolated along a capsule), so the plane of
+the row does not jump when the closest place crosses a kinked joint at a tunnel
+entry or exit. The default is infinite, so :math:`k_{\text{eff}} = \rho` with
 :math:`\rho` from the supports of the four vertices and the body, as for
 attachments; a finite value gives the compliant law
 :math:`k_{\text{eff}} = k\rho/(k+\rho)` and the multiplier converges to the
@@ -994,8 +998,9 @@ these records through their corner particles.
 
 Example: :doc:`vbd_suture </examples>` holds two elastic cuboids in grippers,
 sews them with a running suture of three stitches of a half circle needle,
-brings the edges together with the grippers and releases one gripper so that
-block hangs from the stitches.
+opens the upper jaw of the right gripper and pulls the needle away so that the
+thread draws the right block along the lower jaw until the wound edges meet,
+then withdraws that jaw so the block hangs from the stitches.
 
 Examples
 --------

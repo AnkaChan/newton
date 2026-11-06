@@ -308,6 +308,7 @@ def initialize_suture_points(
 @wp.kernel
 def refresh_suture_points(
     window: int,
+    blend_tangent: int,
     points: SuturePointData,
     rod: SutureRodData,
     tet_indices: wp.array2d[wp.int32],
@@ -318,6 +319,9 @@ def refresh_suture_points(
 
     A point with no cached segment searches the whole rod curve of its needle. A point whose
     closest place reaches the free end of the thread switches its row off (lifecycle rule 5).
+    With ``blend_tangent`` the tangent is continuous along the curve: at each joint it is the
+    bisector of the two adjacent segments and it is interpolated along the segment; otherwise it
+    is the direction of the closest segment, which jumps at a joint where the curve kinks.
     """
     i = wp.tid()
     if points.tet[i] < 0 or points.active[i] == 0:
@@ -361,7 +365,31 @@ def refresh_suture_points(
     xf = body_q[rod.segment_body[best_segment]]
     a = wp.transform_point(xf, rod.segment_local_a[best_segment])
     b = wp.transform_point(xf, rod.segment_local_b[best_segment])
-    points.tangent[i] = wp.normalize(b - a)
+    dir_s = wp.normalize(b - a)
+    tangent = dir_s
+    if blend_tangent != 0:
+        t_a = dir_s
+        t_b = dir_s
+        if best_segment > segment_lo:
+            xf_p = body_q[rod.segment_body[best_segment - 1]]
+            dir_p = wp.normalize(
+                wp.transform_point(xf_p, rod.segment_local_b[best_segment - 1])
+                - wp.transform_point(xf_p, rod.segment_local_a[best_segment - 1])
+            )
+            if wp.length(dir_p + dir_s) > 1.0e-3:
+                t_a = wp.normalize(dir_p + dir_s)
+        if best_segment + 1 < segment_hi:
+            xf_n = body_q[rod.segment_body[best_segment + 1]]
+            dir_n = wp.normalize(
+                wp.transform_point(xf_n, rod.segment_local_b[best_segment + 1])
+                - wp.transform_point(xf_n, rod.segment_local_a[best_segment + 1])
+            )
+            if wp.length(dir_s + dir_n) > 1.0e-3:
+                t_b = wp.normalize(dir_s + dir_n)
+        blended = (1.0 - best_u) * t_a + best_u * t_b
+        if wp.length(blended) > 1.0e-3:
+            tangent = wp.normalize(blended)
+    points.tangent[i] = tangent
     if points.segment_start[i] < 0:
         points.segment_start[i] = best_segment
         points.u_start[i] = best_u
