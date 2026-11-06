@@ -13,9 +13,9 @@
 | D1 | Body side: in place or body anchor | chapter 1, fork "Body side", question 1 | decided 2026-11-06: anchor and trial pair, as the soft side |
 | D2 | Method switch granularity | chapter 1, fork "Method switch", question 2 | decided 2026-11-06: separate `rigid_soft_contact_method`, values `"penalty"` and `"alm"` |
 | D3 | Multiplier history across detections | chapter 1, fork "Multiplier history", question 3 | decided 2026-11-06: matched by the record key |
-| D4 | Rigid support in the gap | chapter 1, fork "Rigid support in the gap" | pending |
+| D4 | Rigid point in the gap | chapter 1, fork "Rigid point in the gap" | decided 2026-11-06: closest point at the body trial for mesh rows, stored body point moved with the body for analytic rows |
 | D5 | Friction metric | chapter 1, fork "Friction metric" | pending |
-| D6 | Masked rows | chapter 1, fork "Masked rows", question 5 | pending |
+| D6 | Masked rows | chapter 1, fork "Masked rows", question 5 | decided 2026-11-06: plane kept, no row, as the host |
 | D7 | World and kinematic shapes: rho from the particle support alone | chapter 1, question 4 | pending |
 | D8 | Body budget fraction rule: exact translation sphere plus linear rotation bound, or bisection on the combined end-point bound | chapter 2 | pending |
 | D9 | Matching mechanism for the record key: sorted merge on a packed key as the self-contact rows, or a hash table | chapter 3 | pending |
@@ -49,3 +49,18 @@ switch". Decision: a separate `rigid_soft_contact_method` string, default `"pena
 ALM-DAT rows, as the host keeps one flag per contact family. `"alm"` requires `rigid_soft_enable_dat=True` and
 `particle_self_contact_method="alm_dat"`; `"penalty"` with `alm_dat` and rigid DAT stays refused
 (`solver_vbd.py:1218`). Rejected: implying the rows from the existing pair of flags.
+
+### D4, the rigid point of the gap (2026-11-06, chat, grill session)
+
+Anka: "ok" to the recommendation. Mesh records recompute the closest-point pair of the soft feature and the rigid
+primitive at the trial pair every iteration, as the soft rows do (point-triangle, edge-edge, triangle-point); the gap
+is the signed distance along the stored plane normal minus particle radius and shape margin. Analytic records keep the
+soft feature point at the detection barycentrics and the stored body point moved with the body trial, as the host's
+penalty does (`rigid_vbd_kernels.py:2177`). Rejected: the support point along the normal; the stored point for every
+record.
+
+### D6, masked rows (2026-11-06, from the host code, no objection)
+
+`_soft_contact_force_enabled` (`soft_contacts_mesh.py:1593`) keeps all raw records for DAT and selects forces by
+particle activity, resolved sign and feature ownership. The chapter keeps that meaning: a masked record keeps its
+plane and gets no row.

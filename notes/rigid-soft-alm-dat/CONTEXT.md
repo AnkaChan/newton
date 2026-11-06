@@ -29,6 +29,10 @@ _Avoid_: truncation (for the anchor move), projection
 The largest end-point motion of any point since the detection pose: half the detection reach times gamma.
 _Avoid_: max displacement, cap, path length
 
+**Gap**:
+The signed distance along the division plane normal from the soft trial point to the rigid trial point, minus particle radius and shape margin; negative once crossed.
+_Avoid_: penetration depth, distance, witness gap
+
 **Record**:
 One rigid-soft contact entry of `Contacts.soft_contact_*`: soft feature, rigid shape and primitive, body point, normal.
 _Avoid_: pair, contact
