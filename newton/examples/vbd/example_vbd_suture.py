@@ -3,28 +3,33 @@
 
 """Example VBD Suture
 
-A simulated half-circle needle with a thread sews two elastic cuboids together.
-A kinematic holder rotates the needle about its arc center so the tip pierces
-the top of the left block, crosses the gap, pierces the right block and exits
-through its top. Every bite opens a virtual tunnel of tunnel points in the
-tetrahedral tissue; the needle and the thread slide through the tunnels with
-capped friction. The free end of the thread is clamped on top of the right
-block, away from the exit, so the slack lies on that block during the bite.
-Once the needle is out, the holder draws it across the wound at a low constant
-speed while the gap is wider than 0.5 mm, so the thread tightens and the gap
-closes; the pull stops when the facing faces meet.
+Two elastic cuboids hang in the air, each held by a gripper 12 mm from the
+wound. A simulated half-circle needle with a thread sews them together with a
+running suture of several stitches: a kinematic holder rotates the needle about
+its arc center so the tip pierces the top of the left block, crosses the gap,
+pierces the right block and exits through its top, then hops to the next stitch.
+Every bite opens a virtual tunnel of tunnel points in the tetrahedral tissue; the
+needle and the thread slide through the tunnels with capped friction. The free end
+of the thread is clamped beside the far corner of the left block and its slack
+hangs below the blocks on the far side, out of the needle's way. After the last
+stitch both grippers bring the wound edges together, and the right gripper opens
+and withdraws: the right block hangs from the stitches, which the hanging weight
+tensions.
 
 Success criteria (test mode, ``test_final``): the state is finite, the needle opens
-exactly two tunnels and both are through at the end, no block is lifted off the
-table, the needle group penetrates ungated tissue by less than 0.5 mm, and the gap
-between the facing block faces is closed to within half a tet edge (1.5 mm).
+two through tunnels per stitch, the needle group penetrates ungated tissue by less
+than 0.5 mm, the gap before the release is closed to within half a tet edge
+(1.5 mm), and after the release the right block hangs on the stitches (it stays
+above the floor and its wound edge stays within 10 mm of the left edge).
 ``check_final_strict`` holds the tighter bounds of the design (gap below 0.5 mm,
-largest tunnel row residual below 0.3 mm, penetration below 0.1 mm); run-to-run
-variation on the GPU moves these by several tenths of a millimetre (see
-notes/vbd-suture/decisions.md I19 and I21), so they are reported, not asserted.
+largest tunnel row residual below 0.3 mm, penetration below 0.1 mm, hanging edge
+within 5 mm); run-to-run variation on the GPU moves these by several tenths of a
+millimetre (see notes/vbd-suture/decisions.md I19 and I21), so they are reported,
+not asserted.
 
 Runs:
 - `python -m newton.examples vbd_suture`
+- `python -m newton.examples vbd_suture --stitches 1 --num-frames 720`
 """
 
 from __future__ import annotations
@@ -41,11 +46,10 @@ from newton.solvers import SolverVBD
 
 PARAMS = {
     "fps": 60,
-    "num_frames": 720,
     "sim_substeps": 10,
-    # 20 iterations: with the soft contacts below the thread slack still changes velocity by 3 to 4 mm/s per frame
-    # at 10 iterations and by 1 mm/s at 20 (the tuning guide's last-resort knob). 10 iterations give a 3 times
-    # faster run with a visibly rougher thread.
+    # 20 iterations: the slack of the 0.2 mg thread capsules shivers at 10 iterations (velocity changes of about
+    # 10 mm/s per frame); 20 iterations halve that. Contact damping, joint damping, a heavier thread and a softer
+    # thread contact did not (VBD tuning guide, jitter pipeline, last resort).
     "solver_iterations": 20,
     # tissue
     "block_cells": (14, 10, 4),
@@ -55,41 +59,54 @@ PARAMS = {
     "tissue_youngs_modulus": 1.0e5,
     "tissue_poisson": 0.45,
     # Volumetric damping [Pa s]. The contact values below already follow the tuning guide's stiffness-ratio rule
-    # and remove the tissue jitter; a damping of 1e2 to 1e3 adds a start transient here (the facing faces bulge 0.2
+    # and remove the tissue jitter; a damping of 1e2 to 1e3 adds a start transient (the facing faces bulge 0.2
     # to 0.9 mm in the first 0.2 s, because the damping Hessian k_damp / dt exceeds the elastic stiffness).
     "tissue_damping": 0.0,
     "particle_radius": 5.0e-4,
+    # grippers: every particle farther than grip_offset from the wound is attached to a kinematic jaw, so each block
+    # is a flat 12 mm cantilever at the wound and does not sag under its own weight
+    "grip_offset": 12.0e-3,
+    "jaw_half_thickness": 1.5e-3,
+    "jaw_clearance": 1.0e-3,
+    "open_dz": 20.0e-3,
+    "open_dx": 60.0e-3,
+    "floor_top": -0.10,
     # needle: half circle
     "needle_radius": 8.0e-3,
     "wire_radius": 4.0e-4,
     "needle_capsules": 12,
     "needle_density": 7800.0,
     # thread
-    "thread_radius": 1.5e-4,
+    # Thicker and heavier than a real 0.15 mm nylon suture (a 2.5 mm capsule weighs 5.5 mg instead of 0.23 mg):
+    # the light thread shivered and its slack crept (notes/vbd-suture/decisions.md I23 and I24), and the 0.5 mm
+    # thread still reads as a thread next to the 0.8 mm needle wire.
+    "thread_radius": 2.5e-4,
     "thread_segment": 2.5e-3,
-    "thread_density": 1100.0,
+    "thread_density": 1.0e4,
     "thread_stretch_stiffness": 2.0e3,
-    # Bend and twist stiffness per joint [N m/rad]: EI / L of a 0.15 mm nylon thread is about 4e-4; 1e-4 keeps the
-    # slack in smooth curves instead of flipping zigzags. Damping near half critical for the 0.2 mg capsules.
-    "thread_bend_stiffness": 1.0e-4,
+    # Bend and twist stiffness per joint [N m/rad] with damping at 1 percent of it, as in the cable examples.
+    "thread_bend_stiffness": 5.0e-4,
     "thread_stretch_damping": 0.02,
-    "thread_bend_damping": 5.0e-9,
+    "thread_bend_damping": 5.0e-6,
     # Contact material of the thread and needle shapes (averaged with the soft side for rigid-soft contact).
-    # The 0.2 mg thread capsules set the scale: with the rigid-soft contact at 3e3 N/m (the mean of both sides)
-    # the slack shivered on the tissue (velocity changes of 10 mm/s per frame); at 300 N/m it rests (3 to 4 mm/s at
-    # 10 iterations, 1 mm/s at 20). Contact damping above 1 percent of the stiffness made it worse again.
-    "thread_mu": 0.1,
+    # The thread's 2e3 N/m joints set its scale: a contact 10 times stiffer than them jitters (tuning guide).
+    # Friction 0.3 against tissue holds the slack where it lies; at 0.1 it drifted 8 mm in the last 3 s of the demo.
+    "thread_mu": 0.3,
     "thread_contact_ke": 1.0e2,
     "thread_contact_kd": 1.0,
     "needle_mu": 0.2,
-    # Free end of the thread: clamped on top of the right block, 22 mm past the exit and 10 mm beside the needle
-    # plane. The route from the needle tail to the clamp lays the slack (about 70 mm in all) on that block.
-    "clamp_position": (0.030, -0.010, 0.01315),
+    # Free end of the thread: clamped beside the far corner of the left block. The route from the needle tail runs
+    # to the far side (+y), down below the blocks, and back up to the clamp, so about 160 mm of slack hangs in the
+    # air where neither the needle nor the stitches can catch it. The y values are offsets from the first stitch.
+    # Rest shape of the thread: False keeps the initial route as the rest shape (its corners travel through the
+    # tunnels as rest kinks), True makes the rest shape straight (zero intrinsic bend and twist).
+    "thread_rest_straight": False,
+    "clamp_position": (-0.046, 0.011, 0.010),
     "thread_route": (
-        (0.016, -0.010, 0.0132),
-        (0.040, -0.013, 0.0132),
-        (0.042, -0.005, 0.0132),
-        (0.032, -0.003, 0.0132),
+        (0.010, 0.011, 0.026),
+        (0.010, 0.013, -0.030),
+        (-0.015, 0.015, -0.034),
+        (-0.040, 0.013, -0.030),
     ),
     # holder drive
     "drive_linear_ke": 1.0e4,
@@ -99,8 +116,7 @@ PARAMS = {
     # contact
     "rigid_gap": 1.0e-3,
     "soft_contact_gap": 1.0e-3,
-    # Soft enough for the 0.2 mg thread capsules (see thread_contact_ke); the needle indents the tissue by 0.2 mm
-    # at the 0.1 N puncture force and DAT keeps every contact penetration-free. Damping 1 percent of the stiffness.
+    # Within 10x of the tissue shear stiffness (34 kPa) and of the thread joints, with 1 percent damping.
     "soft_contact_ke": 5.0e2,
     "soft_contact_kd": 5.0,
     "soft_contact_mu": 0.3,
@@ -109,28 +125,45 @@ PARAMS = {
     # suture
     "tunnel_mu": 0.3,
     "grip": 1.0,
-    # Tunnel row stiffness [N/m], per-particle attribute vbd.suture_stiffness. Infinite = the hard row. A finite
-    # value (about 1 kN/m) lowers the row forces 20 times but lets the thread sit up to 1 mm off the tunnel while
-    # it is drawn through; see notes/vbd-suture/decisions.md I18 and I19.
-    "tunnel_stiffness": float("inf"),
+    # Tunnel row stiffness [N/m], per-particle attribute vbd.suture_stiffness (infinite = the hard row). The hard
+    # rows fight each other where the capsule chain kinks (tunnel entry and exit, capsule joints, the swage) and
+    # their multipliers run away to tens or hundreds of newtons, which tears the thread joints apart and yanks
+    # the tissue; 1e4 N/m bounds the force at about 10 N per millimetre of offset and keeps the thread within
+    # about 1 mm of the tunnel points (notes/vbd-suture/decisions.md I18, I19 and I27).
+    "tunnel_stiffness": 1.0e4,
     "puncture_force": 0.1,
     "puncture_cos": 0.5,
     # holder script [s]
-    "t_approach": 1.0,
-    "t_bite_end": 7.0,
-    "t_pull_end": 12.0,
+    "stitches": 3,
+    "stitch_pitch": 8.0e-3,
+    "t_approach": 0.75,
+    "t_bite": 5.0,
+    "t_hop": 0.75,
+    # After the last stitch both grippers bring the wound edges together at approximate_speed per side while the
+    # gap is open (approximate), then the right gripper opens; the hanging block tensions the stitches. A tighten
+    # phase (t_pull > 0) pulls the needle toward pull_target_xz until the drive force rises by pull_force_max.
+    "t_approximate": 4.0,
+    "approximate_speed": 1.0e-3,
+    "approximate_gap": 0.3e-3,
+    # Each jaw moves at most this far toward the wound (half the gap plus a 0.5 mm press), so the tissue is
+    # brought together, not crushed, when tilted faces keep the mean gap above approximate_gap.
+    "approximate_travel_max": 2.5e-3,
+    "t_pull": 0.0,
+    "pull_force_max": 0.1,
+    "t_open": 0.5,
+    "t_hold": 3.0,
     "bite_angle_deg": 360.0,
-    "center_high": 0.030,
+    # The hop lifts the arc center from center_bite to center_high; the thread drawn on the way down becomes the
+    # slack the next bite consumes (about 25 mm), so a 26 mm lift keeps the bite from pulling thread through the
+    # earlier stitches at its end (I27).
+    "center_high": 0.040,
     "center_bite": 0.014,
-    # Pull: the arc center moves toward this point (over the left block) at constant speed while the gap is
-    # wider than gap_close, and holds otherwise. The speed (26 mm in 5 s) is low so the thread is not yanked
-    # through the tunnels; a wound that the bite has already closed (notes/vbd-suture/decisions.md I19) leaves
-    # the holder still.
-    "pull_target": (-0.024, 0.0, 0.024),
-    "gap_close": 0.5e-3,
+    # Tighten: the arc center moves toward this x and z (at the last stitch's y, over the left block) at constant
+    # speed while the holder drive force stays below pull_force_max, and holds otherwise.
+    "pull_target_xz": (-0.024, 0.024),
     # camera
-    "camera_pos": (0.0, -0.16, 0.08),
-    "camera_target": (0.0, 0.0, 0.015),
+    "camera_pos": (0.0, -0.21, 0.06),
+    "camera_target": (0.0, 0.0, -0.008),
     "camera_fov": 30.0,
 }
 
@@ -158,10 +191,28 @@ def _needle_rotation(psi: float) -> wp.quat:
     return wp.quat_from_axis_angle(wp.vec3(0.0, -1.0, 0.0), float(psi))
 
 
+def schedule(stitches: int, p: dict | None = None) -> dict[str, float]:
+    """Start times of the phases for ``stitches`` stitches [s]."""
+    p = PARAMS if p is None else p
+    stitch = p["t_approach"] + p["t_bite"] + p["t_hop"]
+    approximate = stitches * stitch - p["t_hop"]
+    pull_start = approximate + p["t_approximate"]
+    release = pull_start + p["t_pull"]
+    end = release + p["t_open"] + p["t_hold"]
+    return {"stitch": stitch, "approximate": approximate, "pull_start": pull_start, "release": release, "end": end}
+
+
+def total_frames(stitches: int, p: dict | None = None) -> int:
+    p = PARAMS if p is None else p
+    return int(math.ceil(schedule(stitches, p)["end"] * p["fps"])) + 1
+
+
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.params = PARAMS
+        self.stitches = int(getattr(args, "stitches", None) or PARAMS["stitches"])
+        self.times = schedule(self.stitches)
         self.frame_dt = 1.0 / self.params["fps"]
         self.sim_substeps = self.params["sim_substeps"]
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -172,8 +223,9 @@ class Example:
         # Millimetre-scale scene: the default rigid detection gap would pair every thread capsule with every other.
         builder.rigid_gap = self.params["rigid_gap"]
         SolverVBD.register_custom_attributes(builder)
-        self._build_table(builder)
+        self._build_floor(builder)
         self._build_tissue(builder)
+        self._build_grippers(builder)
         self._build_needle_and_thread(builder)
         builder.color()
         self.model = builder.finalize()
@@ -220,6 +272,10 @@ class Example:
         self.max_residual = 0.0
         self.tunnels_seen = 0
         self.pull_progress = 0.0
+        self.pull_force_base = None
+        self.approximate_shift = 0.0
+        self.released = False
+        self.gap_before_release = None
         self._init_faces()
 
         self.viewer.set_model(self.model)
@@ -231,10 +287,12 @@ class Example:
 
     # ── model construction ──────────────────────────────────────────────
 
-    def _build_table(self, builder):
+    def _build_floor(self, builder):
+        """A safety floor far below the blocks; a block that falls off the stitches lands on it."""
         cfg = newton.ModelBuilder.ShapeConfig(mu=0.6, density=0.0)
+        z = self.params["floor_top"] - 0.005
         builder.add_shape_box(
-            -1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.005), wp.quat_identity()), hx=0.15, hy=0.10, hz=0.005, cfg=cfg
+            -1, xform=wp.transform(wp.vec3(0.0, 0.0, z), wp.quat_identity()), hx=0.15, hy=0.10, hz=0.005, cfg=cfg
         )
 
     def _build_tissue(self, builder):
@@ -251,9 +309,8 @@ class Example:
         for sign in (-1.0, 1.0):
             x0 = sign * (0.5 * p["gap"]) + (-width if sign < 0 else 0.0)
             start = builder.particle_count
-            # The bottom particles sit one particle radius above the table so the first step starts without penetration.
             builder.add_soft_grid(
-                pos=wp.vec3(x0, -0.5 * depth, p["particle_radius"]),
+                pos=wp.vec3(x0, -0.5 * depth, 0.0),
                 rot=wp.quat_identity(),
                 vel=wp.vec3(0.0),
                 dim_x=nx,
@@ -271,11 +328,59 @@ class Example:
             self.block_particle_ranges.append((start, builder.particle_count))
         self.tissue_height = nz * cell
 
+    def _build_grippers(self, builder):
+        """One gripper per block: every particle farther than grip_offset from the wound is tied to a kinematic
+        upper jaw by hard attachments; two visual jaw boxes (no collision) show the grip. The right one opens later."""
+        p = self.params
+        self.grippers = []
+        cfg = newton.ModelBuilder.ShapeConfig(density=0.0, has_shape_collision=False, has_particle_collision=False)
+        for block, (start, end) in enumerate(self.block_particle_ranges):
+            q = np.array([[v[0], v[1], v[2]] for v in builder.particle_q[start:end]], dtype=np.float64)
+            inward = 1.0 if block == 0 else -1.0  # from the facing face into the block
+            face_x = q[:, 0].max() if block == 0 else q[:, 0].min()
+            depth = (face_x - q[:, 0]) * inward
+            slab = np.flatnonzero(depth >= p["grip_offset"] - 1.0e-6)
+            cx = float(0.5 * (q[slab, 0].min() + q[slab, 0].max()))
+            cy = float(q[:, 1].mean())
+            hx = 0.5 * float(q[slab, 0].max() - q[slab, 0].min()) + 1.0e-3
+            hy = 0.5 * float(q[:, 1].max() - q[:, 1].min()) + 2.0e-3
+            hz = p["jaw_half_thickness"]
+            upper_pos = np.array([cx, cy, float(q[:, 2].max()) + hz + p["jaw_clearance"]])
+            lower_pos = np.array([cx, cy, float(q[:, 2].min()) - hz - p["jaw_clearance"]])
+            upper = builder.add_body(
+                xform=wp.transform(wp.vec3(*upper_pos), wp.quat_identity()), label=f"gripper_{block}_upper"
+            )
+            lower = builder.add_body(
+                xform=wp.transform(wp.vec3(*lower_pos), wp.quat_identity()), label=f"gripper_{block}_lower"
+            )
+            builder.add_shape_box(upper, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            builder.add_shape_box(lower, hx=hx, hy=hy, hz=hz, cfg=cfg)
+            attachments = [
+                builder.add_attachment_particle_body(
+                    int(start + i), upper, body_point=wp.vec3(*(q[i] - upper_pos)), stiffness=math.inf
+                )
+                for i in slab
+            ]
+            self.grippers.append(
+                {
+                    "upper": upper,
+                    "lower": lower,
+                    "upper_pos": upper_pos,
+                    "lower_pos": lower_pos,
+                    "attachments": attachments,
+                }
+            )
+
+    def _stitch_y(self, i: int) -> float:
+        """Stitches run from the far side (+y) to the near side (-y), centered on the blocks."""
+        return (0.5 * (self.stitches - 1) - i) * self.params["stitch_pitch"]
+
     def _build_needle_and_thread(self, builder):
         p = self.params
         R = p["needle_radius"]
         r = p["wire_radius"]
-        center = wp.vec3(0.0, 0.0, p["center_high"])
+        y0 = self._stitch_y(0)
+        center = wp.vec3(0.0, y0, p["center_high"])
         rot0 = _needle_rotation(0.0)
 
         # Holder: a kinematic body at the arc center, driven by the script.
@@ -314,16 +419,16 @@ class Example:
             self.holder, self.needle, linear_axes=linear, angular_axes=angular, label="suture_holder_drive"
         )
 
-        # Thread: a rod from the tail down onto the right block, looped on its top and ending at the clamp.
-        # The slack stays on the right block, beside the needle plane, so the needle never catches it.
+        # Thread: a rod from the tail to the far side, down below the blocks and back up to the clamp.
         tail_local = points[-1]
         tail_world = wp.transform_point(wp.transform(center, rot0), tail_local)
-        clamp_world = wp.vec3(*p["clamp_position"])
-        route = [tail_world, *(wp.vec3(*q) for q in p["thread_route"]), clamp_world]
+        shift = wp.vec3(0.0, y0, 0.0)
+        clamp_world = wp.vec3(*p["clamp_position"]) + shift
+        route = [tail_world, *(wp.vec3(*q) + shift for q in p["thread_route"]), clamp_world]
         polyline, thread_length = _resample_polyline(route, p["thread_segment"])
         segments = len(polyline) - 1
         self.thread_length = thread_length
-        rod = newton.Rod(points=polyline, radius=p["thread_radius"])
+        rod = newton.Rod(points=polyline, radius=p["thread_radius"], rest_straight=p["thread_rest_straight"])
         thread_dir = wp.normalize(polyline[1] - polyline[0])
         thread_cfg = newton.ModelBuilder.ShapeConfig(density=p["thread_density"], mu=p["thread_mu"])
         self.thread_bodies, _joints = builder.add_rod(
@@ -356,40 +461,97 @@ class Example:
             label="suture_clamp_joint",
         )
         builder.add_suture_needle(
-            self.needle, tip_shape, centerline=points, thread_bodies=self.thread_bodies, max_tunnels=4
+            self.needle,
+            tip_shape,
+            centerline=points,
+            thread_bodies=self.thread_bodies,
+            max_tunnels=2 * self.stitches + 2,
         )
 
-    # ── holder script ───────────────────────────────────────────────────
+    # ── holder and gripper script ───────────────────────────────────────
 
     def _holder_pose(self, t: float) -> wp.transform:
         p = self.params
-        if t < p["t_approach"]:
-            s = t / p["t_approach"]
-            z = p["center_high"] + (p["center_bite"] - p["center_high"]) * s
-            return wp.transform(wp.vec3(0.0, 0.0, z), _needle_rotation(0.0))
         psi_max = math.radians(p["bite_angle_deg"])
-        if t < p["t_bite_end"]:
-            s = (t - p["t_approach"]) / (p["t_bite_end"] - p["t_approach"])
-            return wp.transform(wp.vec3(0.0, 0.0, p["center_bite"]), _needle_rotation(psi_max * s))
-        # Pull: the center moves toward the target as far as self.pull_progress allows (see _advance_pull).
-        target = np.array(p["pull_target"])
-        start = np.array([0.0, 0.0, p["center_bite"]])
+        high, bite = p["center_high"], p["center_bite"]
+        if t < self.times["approximate"]:
+            i = min(int(t // self.times["stitch"]), self.stitches - 1)
+            tau = t - i * self.times["stitch"]
+            y = self._stitch_y(i)
+            if tau < p["t_approach"]:
+                z = high + (bite - high) * tau / p["t_approach"]
+                return wp.transform(wp.vec3(0.0, y, z), _needle_rotation(0.0))
+            tau -= p["t_approach"]
+            if tau < p["t_bite"]:
+                return wp.transform(wp.vec3(0.0, y, bite), _needle_rotation(psi_max * tau / p["t_bite"]))
+            # hop: lift and move to the next stitch with the needle back at its start orientation
+            s = min((tau - p["t_bite"]) / p["t_hop"], 1.0)
+            y_next = self._stitch_y(i + 1)
+            return wp.transform(wp.vec3(0.0, y + (y_next - y) * s, bite + (high - bite) * s), _needle_rotation(psi_max))
+        # Approximate and tighten: the center moves toward the target as far as self.pull_progress allows.
+        y = self._stitch_y(self.stitches - 1)
+        target = np.array([p["pull_target_xz"][0], y, p["pull_target_xz"][1]])
+        start = np.array([0.0, y, bite])
         c = start + (target - start) * self.pull_progress
         return wp.transform(wp.vec3(*c), _needle_rotation(psi_max))
 
-    def _advance_pull(self):
-        """Advance the pull at constant speed while the gap is open; hold once the facing faces meet."""
-        p = self.params
-        if self.sim_time < p["t_bite_end"] or self.pull_progress >= 1.0:
-            return
-        if self.gap_width() > p["gap_close"]:
-            step = self.frame_dt / (p["t_pull_end"] - p["t_bite_end"])
-            self.pull_progress = min(1.0, self.pull_progress + step)
-
-    def _set_holder(self, t: float):
-        pose = self._holder_pose(t)
+    def drive_force(self) -> float:
+        """Force of the holder drive on the needle [N], from the drive stiffness and the position lag."""
         body_q = self.state_0.body_q.numpy()
-        body_q[self.holder] = pose
+        return float(np.linalg.norm(body_q[self.needle, :3] - body_q[self.holder, :3]) * self.params["drive_linear_ke"])
+
+    def _advance_pull(self):
+        """Tighten at constant speed while the thread is slack; hold once the drive force has risen by
+        pull_force_max above its value at the start of the phase (the thread is taut)."""
+        p = self.params
+        t = self.sim_time
+        if (
+            p["t_pull"] <= 0.0
+            or t < self.times["pull_start"]
+            or t >= self.times["release"]
+            or self.pull_progress >= 1.0
+        ):
+            return
+        force = self.drive_force()
+        if self.pull_force_base is None:
+            self.pull_force_base = force
+        if force - self.pull_force_base < p["pull_force_max"]:
+            self.pull_progress = min(1.0, self.pull_progress + self.frame_dt / p["t_pull"])
+
+    def _release(self):
+        """Switch the right gripper's attachments off; the jaws then open and withdraw in _set_kinematics."""
+        self.gap_before_release = self.gap_width()
+        enabled = self.model.attachment_particle_body_enabled.numpy()
+        enabled[self.grippers[1]["attachments"]] = 0
+        self.model.attachment_particle_body_enabled.assign(enabled)
+        self.released = True
+
+    def _set_kinematics(self, t: float):
+        p = self.params
+        body_q = self.state_0.body_q.numpy()
+        body_q[self.holder] = self._holder_pose(t)
+        if t >= self.times["approximate"]:
+            # both grippers move their blocks toward the wound at constant speed while the gap is open
+            if (
+                t < self.times["pull_start"]
+                and self.gap_width() > p["approximate_gap"]
+                and self.approximate_shift < p["approximate_travel_max"]
+            ):
+                self.approximate_shift += p["approximate_speed"] * self.frame_dt
+            for block, g in enumerate(self.grippers):
+                sign = 1.0 if block == 0 else -1.0
+                shift = np.array([sign * self.approximate_shift, 0.0, 0.0])
+                if block == 1 and t >= self.times["release"]:
+                    if not self.released:
+                        self._release()
+                    so = min((t - self.times["release"]) / p["t_open"], 1.0)
+                    upper = g["upper_pos"] + shift + np.array([p["open_dx"] * so, 0.0, p["open_dz"] * so])
+                    lower = g["lower_pos"] + shift + np.array([p["open_dx"] * so, 0.0, -p["open_dz"] * so])
+                else:
+                    upper = g["upper_pos"] + shift
+                    lower = g["lower_pos"] + shift
+                body_q[g["upper"]] = wp.transform(wp.vec3(*upper), wp.quat_identity())
+                body_q[g["lower"]] = wp.transform(wp.vec3(*lower), wp.quat_identity())
         self.state_0.body_q.assign(body_q)
 
     # ── stepping ────────────────────────────────────────────────────────
@@ -410,7 +572,7 @@ class Example:
 
     def step(self):
         self._advance_pull()
-        self._set_holder(self.sim_time)
+        self._set_kinematics(self.sim_time)
         self.frame += 1
         if self.graph is not None:
             wp.capture_launch(self.graph)
@@ -434,20 +596,24 @@ class Example:
         self.viewer.camera.pitch = math.degrees(math.atan2(d[2], dist_xy))
 
     def gap_width(self) -> float:
-        """Signed distance between the facing block faces, from their initial face particles."""
+        """Mean separation of the facing block faces along x, centroid to centroid, from their initial face particles."""
         q = self.state_0.particle_q.numpy()
         a0, a1 = self.block_particle_ranges[0]
         b0, b1 = self.block_particle_ranges[1]
-        return float(q[b0:b1, 0][self._face_b].min() - q[a0:a1, 0][self._face_a].max())
+        return float(q[b0:b1, 0][self._face_b].mean() - q[a0:a1, 0][self._face_a].mean())
 
-    def block_lift(self) -> float:
-        """Largest height of a bottom-layer tissue particle above the table [m]."""
+    def edge_distance(self) -> float:
+        """Distance between the centroids of the two facing faces [m]."""
         q = self.state_0.particle_q.numpy()
-        lift = 0.0
-        for start, end in self.block_particle_ranges:
-            bottom = self._bottom[start:end]
-            lift = max(lift, float(q[start:end, 2][bottom].min()))
-        return lift
+        a0, a1 = self.block_particle_ranges[0]
+        b0, b1 = self.block_particle_ranges[1]
+        return float(np.linalg.norm(q[b0:b1][self._face_b].mean(axis=0) - q[a0:a1][self._face_a].mean(axis=0)))
+
+    def right_block_lowest(self) -> float:
+        """Lowest particle of the right block [m]; it must stay well above the floor after the release."""
+        q = self.state_0.particle_q.numpy()
+        b0, b1 = self.block_particle_ranges[1]
+        return float(q[b0:b1, 2].min())
 
     def _init_faces(self):
         q = self.model.particle_q.numpy()
@@ -457,7 +623,7 @@ class Example:
         xb = q[b0:b1, 0]
         self._face_a = xa > xa.max() - 1.0e-6
         self._face_b = xb < xb.min() + 1.0e-6
-        self._bottom = q[:, 2] < q[:, 2].min() + 1.0e-6
+        self._edge_distance_0 = self.edge_distance()
 
     def max_row_residual(self) -> float:
         """Largest transverse distance from an active tunnel point to its rod place [m]."""
@@ -530,47 +696,64 @@ class Example:
             self.max_residual = max(self.max_residual, self.max_row_residual())
             self.tunnels_seen = max(self.tunnels_seen, int(self.solver._suture_tunnel_count.numpy()[0]))
 
-    def _check_final(self, *, gap_bound: float, residual_bound: float, penetration_bound: float):
+    def _check_final(self, *, gap_bound: float, residual_bound: float, penetration_bound: float, hang_bound: float):
         if not hasattr(self, "_face_a"):
             self._init_faces()
         q = self.state_0.particle_q.numpy()
         body_q = self.state_0.body_q.numpy()
         if not (np.isfinite(q).all() and np.isfinite(body_q).all()):
             raise AssertionError("simulation produced non-finite state")
+        # Every stitch leaves one through tunnel per block; a graze (two points, finished, no rows) does not count.
+        expected = 2 * self.stitches
         tunnels = int(self.solver._suture_tunnel_count.numpy()[0])
         states = self.solver._suture_tunnel_state.numpy()[:tunnels]
-        if tunnels != 2 or not all(int(s) in (2, 3) for s in states):
-            raise AssertionError(f"expected two fixed tunnels, found {tunnels} with states {states.tolist()}")
-        lift = self.block_lift()
-        if lift > 3.0e-3:
-            raise AssertionError(f"a block was lifted {lift * 1e3:.1f} mm off the table by the thread")
+        counts = self.solver._suture_tunnel_point_count.numpy()[:tunnels]
+        through = int(sum(1 for s, c in zip(states, counts, strict=True) if int(s) == 2 and int(c) >= 3))
+        if through != expected or not all(int(s) in (2, 3, 4) for s in states):
+            raise AssertionError(
+                f"expected {expected} through tunnels, found {through} among {tunnels} tunnels with states "
+                f"{states.tolist()} and point counts {counts.tolist()}"
+            )
         if self.max_penetration > penetration_bound:
             raise AssertionError(
                 f"needle group penetrated ungated tissue by {self.max_penetration * 1e3:.3f} mm, "
                 f"bound {penetration_bound * 1e3:.2f} mm"
             )
-        gap = self.gap_width()
+        gap = self.gap_before_release if self.released else self.gap_width()
         if abs(gap) > gap_bound:
             raise AssertionError(f"gap between the blocks is {gap * 1e3:.2f} mm, bound {gap_bound * 1e3:.2f} mm")
         if self.max_residual > residual_bound:
             raise AssertionError(
                 f"largest tunnel point residual {self.max_residual * 1e3:.3f} mm exceeds {residual_bound * 1e3:.2f} mm"
             )
+        if self.released:
+            lowest = self.right_block_lowest()
+            if lowest < self.params["floor_top"] + 0.02:
+                raise AssertionError(f"the released block fell to {lowest * 1e3:.1f} mm; the stitches did not hold it")
+            drift = self.edge_distance() - self._edge_distance_0
+            if drift > hang_bound:
+                raise AssertionError(
+                    f"the released block's wound edge moved {drift * 1e3:.1f} mm away from the left edge, "
+                    f"bound {hang_bound * 1e3:.1f} mm"
+                )
 
     def test_final(self):
-        """Robust invariants: two through tunnels, finite state, no lift, bounded penetration, wound closed to
-        within half a tet edge. Run-to-run variation on the GPU (decisions I19, I21) keeps the design's tighter
-        bounds out of this test; see :meth:`check_final_strict`."""
-        self._check_final(gap_bound=1.5e-3, residual_bound=1.0e-3, penetration_bound=0.5e-3)
+        """Robust invariants: two through tunnels per stitch, finite state, bounded penetration, wound closed to
+        within half a tet edge before the release, and the released block hanging on the stitches. Run-to-run
+        variation on the GPU (decisions I19, I21) keeps the design's tighter bounds out of this test; see
+        :meth:`check_final_strict`."""
+        self._check_final(gap_bound=1.5e-3, residual_bound=1.0e-3, penetration_bound=0.5e-3, hang_bound=10.0e-3)
 
     def check_final_strict(self):
-        """The bounds of the design: gap below 0.5 mm, row residual below 0.3 mm, penetration below 0.1 mm."""
-        self._check_final(gap_bound=0.5e-3, residual_bound=0.3e-3, penetration_bound=1.0e-4)
+        """The bounds of the design: gap below 0.5 mm, row residual below 0.3 mm, penetration below 0.1 mm, hanging
+        edge within 5 mm of the left edge."""
+        self._check_final(gap_bound=0.5e-3, residual_bound=0.3e-3, penetration_bound=1.0e-4, hang_bound=5.0e-3)
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
-        parser.set_defaults(num_frames=PARAMS["num_frames"])
+        parser.add_argument("--stitches", type=int, default=PARAMS["stitches"], help="Number of stitches.")
+        parser.set_defaults(num_frames=total_frames(PARAMS["stitches"]))
         return parser
 
 

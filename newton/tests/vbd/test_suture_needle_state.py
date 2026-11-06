@@ -184,6 +184,29 @@ def test_tet_walk_appends_points_and_exits(test, device):
         test.assertLess(abs(first[2] - TOP), 1.0e-3)
 
 
+def test_graze_leaves_no_row(test, device):
+    """A tip that leaves again before one spacing of travel inside opens no stitch: the tunnel is a graze with
+    its points switched off (its gate stays), and the needle is free again. The exit counts once the tip is more
+    than one spacing from the entry; while it is closer, the tunnel stays open (a pressed surface may spring back
+    over a shallow tip)."""
+    with wp.ScopedDevice(device):
+        _model, solver, s0, s1, control, needle = _scene(device, armed=True, spacing=0.015)
+        z0 = TOP + TIP_RADIUS + 1.0e-4
+        poses = _descend(z0, -5.0e-3, 5.0e-4)
+        below = [pose for pose in poses if pose.p[2] < -1.0e-3]
+        s0, s1 = _drive(solver, s0, s1, control, needle, poses[: len(poses) - len(below)])
+        # the tip is out of the slab but within one spacing of the entry: the tunnel is still open
+        test.assertEqual(int(solver.suture_needle_state()[0]), 1)
+        test.assertEqual(int(solver._suture_tunnel_state.numpy()[0]), 1)
+        s0, s1 = _drive(solver, s0, s1, control, needle, below)
+        test.assertEqual(int(solver.suture_needle_state()[0]), 0)
+        test.assertEqual(int(solver._suture_tunnel_count.numpy()[0]), 1)
+        test.assertEqual(int(solver._suture_tunnel_state.numpy()[0]), 4)
+        count = int(solver._suture_tunnel_point_count.numpy()[0])
+        test.assertEqual(count, 2)
+        test.assertTrue((solver._suture_point_active.numpy()[:count] == 0).all())
+
+
 def test_retraction_removes_points(test, device):
     with wp.ScopedDevice(device):
         model, solver, s0, s1, control, needle = _scene(device, armed=True)
@@ -303,6 +326,7 @@ for fn in (
     test_puncture_requires_orientation,
     test_armed_mode_punctures_on_contact,
     test_tet_walk_appends_points_and_exits,
+    test_graze_leaves_no_row,
     test_retraction_removes_points,
     test_rod_end_finishes_tunnel,
     test_gate_bits_follow_the_tunnel,

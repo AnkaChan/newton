@@ -33,13 +33,20 @@ wp.config.log_level = wp.LOG_WARNING
 
 import newton
 import newton.viewer
-from newton.examples.vbd.example_vbd_suture import Example
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location(
+    "gripper_example", str(Path(__file__).resolve().parent / "example_vbd_suture.py")
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+Example = _mod.Example
 from newton_capture import Capture
 from newton_capture._video import VideoWriter
 
 out = Path(args.output)
 out.mkdir(parents=True, exist_ok=True)
-from newton.examples.vbd.example_vbd_suture import total_frames
+total_frames = _mod.total_frames
 
 example_argv = ["--viewer", "null"]
 if args.stitches is not None:

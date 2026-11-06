@@ -910,7 +910,12 @@ tet walk tracks the tip from tet to tet across face neighbors; a new point is
 appended after ``suture_point_spacing`` of forward travel (``None`` selects half
 the mean tet edge length, clamped to 0.5 to 2 mm), a point is removed when the
 tip retreats past it, and the exit point is placed when the walk leaves through
-a boundary face. The tunnel is then fixed. A puncture may open the next tunnel
+a boundary face. The tunnel is then fixed. A tip that leaves again before one
+spacing of travel inside has grazed the surface: that tunnel keeps its contact
+gate but holds no row and is not a stitch. The exit counts once the tip is more
+than one spacing from the entry point; while it is closer, the tunnel stays
+open, because a pressed surface can spring back over a shallow tip. A puncture
+may open the next tunnel
 as soon as no tunnel is growing, so one needle sews several bodies in one
 stroke. A tunnel finishes when the free end of the thread has passed every
 point; it is never reused.
@@ -944,7 +949,11 @@ tunnel exactly: the multipliers alternate in sign along the tunnel and reach
 0.3 N per point in 100 kPa tissue with 3 mm tets, enough to drag a free block
 along. A finite stiffness of about 1 kN/m removes the fight (multipliers of 10
 to 20 mN) but lets a thread drawn through the tunnel sit up to 1 mm off the
-points; the example keeps the hard default.
+points. The example uses 1e4 N/m: with hard rows, the multipliers of points
+at the capsule joints and kinks of a thread drawn through several stitches ran
+away to tens of newtons and tore the thread joints apart; 1e4 N/m bounds the
+row force at 10 N per millimetre and keeps the thread within about 1 mm of the
+points.
 
 **Friction.** Along the tangent the row applies the capped ALM friction of
 body-body contact in one dimension: with the slip :math:`s` between the tissue
@@ -983,8 +992,10 @@ Build the :class:`~newton.CollisionPipeline` with
 tissue surface also collide with the needle and the thread; the gate applies to
 these records through their corner particles.
 
-Example: :doc:`vbd_suture </examples>` sews two elastic cuboids with a half
-circle needle and tightens the thread.
+Example: :doc:`vbd_suture </examples>` holds two elastic cuboids in grippers,
+sews them with a running suture of three stitches of a half circle needle,
+brings the edges together with the grippers and releases one gripper so that
+block hangs from the stitches.
 
 Examples
 --------

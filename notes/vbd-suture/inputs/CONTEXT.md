@@ -88,6 +88,13 @@ _Avoid_: global suture settings, solver flags (there is no enable flag; a suture
 One pass of the needle through one tissue piece, from its puncture to its exit; one tunnel per bite.
 _Avoid_: pass, stitch (a stitch is the thread loop left by two bites)
 
+**Graze**:
+A tunnel whose tip leaves through a boundary face before one tunnel point spacing of travel inside (entry and exit only). It holds no tunnel point rows and is not a stitch; it keeps its contact gate while the shaft may still sit in the hole. The exit counts once the tip is more than one spacing from the entry point; a tip that sits just outside within one spacing keeps the tunnel open. Decided 2026-11-06 (I26).
+_Avoid_: false tunnel, spurious tunnel
+
+**Gripper**:
+A kinematic jaw pair that holds the outer part of a tissue piece through hard particle-body attachments; opening a gripper switches its attachments off. Demo scene of 2026-11-06 (I25).
+
 **Clamped end**:
 The thread's free end fixed to a static body as the first milestone's stand-in for a knot, so pulling the needle end tightens the stitch.
 _Avoid_: knot, fixed end, pinned end

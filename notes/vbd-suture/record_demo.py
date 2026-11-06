@@ -15,7 +15,8 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--output", required=True, help="Output directory for the video, stills and metrics.")
-parser.add_argument("--frames", type=int, default=720)
+parser.add_argument("--frames", type=int, default=None, help="Frames to record; default = the example schedule.")
+parser.add_argument("--stitches", type=int, default=None, help="Stitches; default = the example default.")
 parser.add_argument("--width", type=int, default=1280)
 parser.add_argument("--height", type=int, default=720)
 parser.add_argument("--camera-pos", type=float, nargs=3, default=(0.0, -0.16, 0.085))
@@ -32,13 +33,23 @@ wp.config.log_level = wp.LOG_WARNING
 
 import newton
 import newton.viewer
-from newton.examples.vbd.example_vbd_suture import Example
+from newton.examples.vbd.example_vbd_suture import Example, total_frames
 from newton_capture import Capture
 from newton_capture._video import VideoWriter
 
 out = Path(args.output)
 out.mkdir(parents=True, exist_ok=True)
-example_args = Example.create_parser().parse_args(["--viewer", "null", "--num-frames", str(args.frames)])
+
+example_argv = ["--viewer", "null"]
+if args.stitches is not None:
+    example_argv += ["--stitches", str(args.stitches)]
+frames = (
+    args.frames
+    if args.frames is not None
+    else total_frames(args.stitches or Example.create_parser().get_default("stitches"))
+)
+example_argv += ["--num-frames", str(frames)]
+example_args = Example.create_parser().parse_args(example_argv)
 example = Example(newton.viewer.ViewerNull(), example_args)
 example._init_faces()
 
@@ -71,7 +82,7 @@ with Capture(
     viewer = cap._get_viewer(example.model)
     cap._apply_camera(viewer)
     with VideoWriter(str(out / "vbd_suture.mp4"), fps=example.params["fps"]) as writer:
-        for frame in range(args.frames):
+        for frame in range(frames):
             viewer.begin_frame(example.sim_time)
             viewer.log_state(example.state_0)
             viewer.end_frame()
@@ -97,12 +108,20 @@ with Capture(
                         "max_residual_mm": example.max_residual * 1e3,
                         "max_penetration_mm": example.max_penetration * 1e3,
                         "soft_contacts": soft_contacts(),
+                        "released": example.released,
+                        "pull": example.pull_progress,
                     }
                 )
                 print(json.dumps(metrics[-1]))
         video = writer.close()
 elapsed = time.time() - t0
-summary = {"frames": args.frames, "seconds": elapsed, "video": str(video), "final": metrics[-1] if metrics else None}
+summary = {
+    "frames": frames,
+    "stitches": example.stitches,
+    "seconds": elapsed,
+    "video": str(video),
+    "final": metrics[-1] if metrics else None,
+}
 for name in ("test_final", "check_final_strict"):
     try:
         getattr(example, name)()

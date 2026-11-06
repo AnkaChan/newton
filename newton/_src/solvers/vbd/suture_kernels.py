@@ -41,6 +41,7 @@ TUNNEL_UNUSED = wp.constant(0)
 TUNNEL_PIERCING = wp.constant(1)
 TUNNEL_THROUGH = wp.constant(2)
 TUNNEL_FINISHED = wp.constant(3)
+TUNNEL_GRAZE = wp.constant(4)
 
 # The face opposite local vertex i of a tet, as local indices.
 _TET_FACES = ((1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1))
@@ -872,6 +873,7 @@ def update_suture_needle_state(
         bary = _tet_barycentric(tet, tet_indices, particle_q, tip)
         steps = int(0)
         exited = bool(False)
+        deferred = bool(False)
         inside = _bary_min(bary) >= -_WALK_EPS
         if inside:
             needle_entered[n] = 1
@@ -880,6 +882,16 @@ def update_suture_needle_state(
             neighbor = tet_neighbors[tet, face]
             if neighbor < 0:
                 if needle_entered[n] != 0:
+                    if tunnel_point_count[slot] < 3:
+                        entry_i = slot * Q
+                        x_entry = _barycentric_point(points.tet[entry_i], points.bary[entry_i], tet_indices, particle_q)
+                        if wp.length(tip - x_entry) < spacing:
+                            # Within one spacing of the entry a tip can sit just outside the mesh because the
+                            # pressed surface sprang back over the shallow tip, or because it clipped a bump:
+                            # keep the tunnel open and look again at the next update. A tip that moves farther
+                            # away while outside finishes the tunnel below as a graze.
+                            deferred = True
+                            break
                     _append_suture_point(
                         slot,
                         tet,
@@ -891,7 +903,18 @@ def update_suture_needle_state(
                         tunnel_point_count,
                         overflow,
                     )
-                    tunnel_state[slot] = TUNNEL_THROUGH
+                    if tunnel_point_count[slot] < 3:
+                        # A graze: the tip left again before one spacing of travel inside. The tunnel holds no
+                        # row (its points switch off) and is not a stitch; it keeps its contact gate, because
+                        # the shaft may still sit in the hole.
+                        for q in range(tunnel_point_count[slot]):
+                            i_off = slot * Q + q
+                            points.active[i_off] = 0
+                            points.lam[i_off] = wp.vec3(0.0)
+                            points.lam_t[i_off] = 0.0
+                        tunnel_state[slot] = TUNNEL_GRAZE
+                    else:
+                        tunnel_state[slot] = TUNNEL_THROUGH
                     needle_state[n] = SUTURE_OUTSIDE  # the tunnel is fixed; the tip may open the next one
                     needle_tunnel[n] = -1
                     exited = True
@@ -901,7 +924,7 @@ def update_suture_needle_state(
             steps += 1
             if _bary_min(bary) >= -_WALK_EPS:
                 needle_entered[n] = 1
-        if not exited:
+        if not exited and not deferred:
             if _bary_min(bary) >= -_WALK_EPS or needle_entered[n] != 0:
                 tip_tet[n] = tet
             if needle_entered[n] != 0:
@@ -989,7 +1012,7 @@ def update_suture_gate(
         for t in range(T):
             slot = n * T + t
             st = tunnel_state[slot]
-            if st != TUNNEL_PIERCING and st != TUNNEL_THROUGH:
+            if st != TUNNEL_PIERCING and st != TUNNEL_THROUGH and st != TUNNEL_GRAZE:
                 continue
             count = tunnel_point_count[slot]
             prev = wp.vec3(0.0)
