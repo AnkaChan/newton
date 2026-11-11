@@ -11584,6 +11584,7 @@ class ModelBuilder:
         max_vertices: int = 32,
         max_faces: int = 128,
         max_edges: int | None = None,
+        max_tets: int = 0,
         park_position: Vec3,
         park_spacing: float,
         particle_radius: float,
@@ -11606,18 +11607,39 @@ class ModelBuilder:
           color ``c`` form the copy color group ``C + c`` (``C`` is the number of colors).
         - ``2 * max_faces`` spare triangle rows and ``max_edges`` spare edge rows of the collision
           surface, each on its own inactive parking particle.
+        - ``max_tets`` spare tets with zero stiffness on the four corners of the idle tet. The
+          XFEM-type cut (``SolverVBD(cut_method="xfem")``) writes the second fragment of a cut
+          tet into one of them.
         - one idle tet with zero stiffness on four parking particles; unused vertex-to-tet records
-          point at it.
+          point at it. It stays the last tet.
 
         All new particles sit on the parking lattice: a cubic lattice with ``park_spacing`` that
         starts at ``park_position``. Keep it away from the tissue and from every tool path, by more
         than the contact detection distances: self contact and box or capsule contact also see
         inactive particles.
 
+        Sizes for ``SolverVBD(cut_method="xfem")``, with ``T`` the tets that the blade plane
+        crosses, ``V`` their vertices, ``E`` the mesh edges that the plane crosses, ``F`` the skin
+        triangles that the plane crosses and ``S`` the skin edges that it crosses:
+
+        - ``max_tets >= T`` (one spare tet per cut tet).
+        - ``max_vertices``: the pool of one color gives one spare particle to each of its vertices
+          in ``V`` (a virtual corner) and one to each edge end in ``E`` (a wound particle; a crossed
+          edge takes one spare from the pool of each of its two ends). ``max_vertices`` at or above
+          ``(V + 2 * E)`` divided by the number of colors, with room for an uneven spread, is enough.
+        - ``2 * max_faces >= 4 * max_tets + 2 * F``: four wound triangle rows per cut tet and two
+          extra rows per clipped skin triangle.
+        - ``max_edges >= 10 * max_tets + S + E``: ten wound edge rows per cut tet, one extra row per
+          cut skin edge and one front row per crossed mesh edge (``cut_xfem_front_rows``).
+
+        A cut advance of ``cut_method="xfem"`` that does not fit these sizes is refused as a whole:
+        its tets stay uncut and :meth:`newton.solvers.SolverVBD.cut_report` counts the overflow.
+
         Args:
             max_vertices: Spare particles per particle color.
             max_faces: Cut faces in the whole run; each needs two spare triangle rows.
             max_edges: Spare edge rows. ``None`` means ``3 * max_faces``.
+            max_tets: Spare tets. The cut along tet faces needs none.
             park_position: World position of the first parking place [m].
             park_spacing: Distance between two parking places [m].
             particle_radius: Radius of every spare and parking particle [m]; use the radius of
@@ -11636,7 +11658,7 @@ class ModelBuilder:
             raise RuntimeError("Call color() or set_coloring() before add_cut_capacity()")
         if max_edges is None:
             max_edges = 3 * max_faces
-        if max_vertices < 1 or max_faces < 1 or max_edges < 0:
+        if max_vertices < 1 or max_faces < 1 or max_edges < 0 or max_tets < 0:
             raise ValueError("Cut capacities must be positive")
         if not (park_spacing > 0.0) or not (particle_radius > 0.0):
             raise ValueError("park_spacing and particle_radius must be positive")
@@ -11709,9 +11731,11 @@ class ModelBuilder:
             add_parked(lattice_point(side + dx, dy, dz)) for dx, dy, dz in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1))
         ]
         groups[last].extend(idle_particles)
-        tet_count_before = len(self.tet_indices)
-        self.add_tetrahedron(*idle_particles, k_mu=0.0, k_lambda=0.0, k_damp=0.0)
-        if len(self.tet_indices) != tet_count_before + 1:
+        # Spare tets first, then the idle tet, all on the four idle corners with zero stiffness.
+        tet_spare_start = len(self.tet_indices)
+        for _ in range(int(max_tets) + 1):
+            self.add_tetrahedron(*idle_particles, k_mu=0.0, k_lambda=0.0, k_damp=0.0)
+        if len(self.tet_indices) != tet_spare_start + int(max_tets) + 1:
             raise RuntimeError("The idle tet of the cut capacity has no positive volume")
 
         self.particle_color_groups = [np.array(group, dtype=int) for group in groups]
@@ -11725,7 +11749,9 @@ class ModelBuilder:
             "edge_spare_start": edge_spare_start,
             "edge_spare_count": int(max_edges),
             "row_park_particle": row_park_particle,
-            "idle_tet": tet_count_before,
+            "tet_spare_start": tet_spare_start,
+            "tet_spare_count": int(max_tets),
+            "idle_tet": tet_spare_start + int(max_tets),
             "particle_start": particle_start,
             "particle_end": self.particle_count,
             "park_lower": tuple(origin),

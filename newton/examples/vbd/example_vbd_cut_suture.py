@@ -15,6 +15,32 @@ meet, the lower jaw withdraws and the right half hangs from the stitches.
 The cut edits array contents only (tet corners, spare particles, surface rows), so the
 whole frame stays one captured CUDA graph.
 
+With ``--cut-method xfem`` the example shows the XFEM-type cut instead, without the suture.
+The blade plane is off the mesh planes, in the middle of a cell (``--blade-yaw-deg`` also
+turns it about the vertical axis). The solver cuts through the tets where the blade is: a
+cut tet becomes two fragments, its far-side corners become virtual corners, and wound
+particles tied to the cut tet edges carry the collision triangles of the two wound faces.
+After the cut the grippers pull the halves 4 mm apart, press the wound closed 1.5 mm past
+the closed position and open it again. The two wound faces start one start gap (1 mm)
+apart, so without self contact that press would take them 0.5 mm through each other; with
+it they rest on each other. The needle stays parked above the block.
+
+Limits of the XFEM-type cut scene:
+
+- The self-contact damping is 0 (5.0 for the face cut): with the damping the pressed wound
+  shivers at 20 iterations (see ``PARAMS["xfem_self_contact_kd"]``). The wound contact of this
+  scene has no dissipation of its own.
+- The suture does not know fragments yet, so no stitch is made and the suture script never
+  starts. The solver warns about a model with needles; the example keeps the needle parked
+  and does not show that warning.
+- The blade force has an upper limit with the penalty law of the rigid-soft contact, and the
+  scene runs above the value at which the solver warns (cut force 0.5 N, one contact record
+  0.25 N). Many records carry the blade here and the cut went through in every run; the
+  example does not show that warning. ``rigid_soft_contact_use_log_barrier=True`` removes
+  the limit.
+- With the blade turned, a wound face is stepped where the blade plane passes near a vertex,
+  and some mesh edges cannot hold the full start gap (``cut_report()`` counts them).
+
 Success criteria:
 In test mode (``test_final``) the state is finite; exactly the tet faces of the cut plane
 are cut and the tissue has two equal parts; the particle mass is unchanged; no cut capacity
@@ -23,23 +49,34 @@ contact with by less than 0.5 mm; the grippers open the wound to its full width;
 suture criteria of ``example_vbd_suture.py`` hold (two through tunnels per stitch, bounded
 needle penetration and row residual, wound closed before the release, right half hanging
 on the stitches).
+With ``--cut-method xfem`` the state is finite; exactly the tets that the blade plane
+crosses are cut, each once, and the tissue has two parts; the particle mass is unchanged;
+no cut capacity and no self-contact list overflowed; no surface row mixes parked and live
+particles, names a virtual corner or has an edge short enough to act as a point; the blade
+edge never passes a crossed tet that is not cut; the particle speeds and the tie residual
+stay below their bounds; the grippers open the wound to its full width; and while the
+wound is pressed closed, past the start gap, the two wound faces do not pass through each
+other, rest about one self-contact margin apart and are calm.
 
 Runs:
 - `python -m newton.examples vbd_cut_suture`
 - `python -m newton.examples vbd_cut_suture --stitches 1 --num-frames 1260`
 - `python -m newton.examples vbd_cut_suture --cut-arm wound --num-frames 400`
+- `python -m newton.examples vbd_cut_suture --cut-method xfem --num-frames 593`
 """
 
 from __future__ import annotations
 
 import itertools
 import math
+import warnings
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverVBD
 
 PARAMS = {
@@ -98,6 +135,48 @@ PARAMS = {
     "cut_max_faces": 128,
     "park_position": (-0.0165, 0.060, -0.060),
     "park_spacing": 3.0e-3,
+    # ── XFEM-type cut (--cut-method xfem). The face cut reads none of the values of this block. ──
+    # The blade plane is off the mesh planes: x = 1.5 mm is the middle of a 3 mm cell. blade_yaw_deg turns the
+    # blade about the vertical axis through (blade_x, 0).
+    "blade_x": 1.5e-3,
+    "blade_yaw_deg": 0.0,
+    # Capacity, by the sizing rule of ModelBuilder.add_cut_capacity. The blade plane crosses T = 200 tets (one
+    # layer of 10 x 4 cells of 5 tets) with V = 110 vertices, E = 149 mesh edges, F = 56 skin triangles and
+    # S = 56 skin edges; the four pools give 110, 96, 104 and 98 spare particles. Turned by 8 degrees:
+    # T = 224, V = 120, E = 167, F = 60, S = 60, pools 122, 107, 116 and 109. The values hold the turned scene
+    # with a reserve of 14 percent (spare tets), 18 percent (largest pool) and 33 percent (skin rows):
+    # max_tets >= T; max_vertices >= largest pool; 2 * max_faces >= 4 * max_tets + 2 * F;
+    # max_edges >= 10 * max_tets + S + E.
+    "xfem_max_tets": 256,
+    "xfem_max_vertices": 144,
+    "xfem_max_faces": 592,
+    "xfem_max_edges": 2864,
+    # The parking lattice has 4624 places (17 per side, 48 mm): behind and below the block, 20 mm above the
+    # floor, away from the blade's way out (-y) and from the thread.
+    "xfem_park_position": (-0.027, 0.060, -0.080),
+    # Self-contact lists per vertex and per edge row (solver defaults 32 and 64): the lists hold the pairs of
+    # the two wound faces and, before the solver's cut filter removes them, the pairs of one side with itself.
+    # Measured in this scene: at most 36 triangles at one vertex and 65 edges at one edge row (turned by
+    # 8 degrees: 47 and 94).
+    "xfem_vertex_contact_buffer": 64,
+    "xfem_edge_contact_buffer": 128,
+    # Self-contact damping of this scene (it replaces self_contact_kd). With 5.0, the value of the face cut,
+    # the pressed wound shivers at 20 iterations: wound particles and virtual corners move at 20 to 90 mm/s for
+    # the whole hold. It is calm (below 2 mm/s) without the damping, and also with the damping at 40 iterations
+    # or without gravity. The damping acts on closing pairs only, with up to 3000 N/m per pair (kd / dt)
+    # against a contact stiffness of 500 N/m and a tie stiffness of 1000 N/m. Nothing else is in self contact
+    # in this scene.
+    "xfem_self_contact_kd": 0.0,
+    # After the cut: the grippers pull the halves `gap` apart (t_pull_apart), hold, press the wound closed
+    # press_past_closed beyond the closed position (each gripper goes back by gap / 2 plus half of it), hold,
+    # open the wound to `gap` again and hold. Every move has the gripper speed of the pull (4 mm/s).
+    # The press goes past the start gap of the wound faces (the self-contact margin, 1 mm): without self
+    # contact the two wound faces would pass 0.5 mm through each other, so the pass-through checks of
+    # test_final can fail.
+    "press_past_closed": 1.5e-3,
+    "t_hold_open": 1.0,
+    "t_hold_pressed": 1.5,
+    "t_hold_reopen": 1.0,
     # grippers: every particle farther than grip_offset from the wound is attached to the kinematic upper jaw, so
     # each block is a flat 12 mm cantilever at the wound and does not sag under its own weight. The right lower
     # jaw also collides with the tissue (friction jaw_mu): it carries the block after the upper jaw opens and the
@@ -282,9 +361,65 @@ def cut_schedule(p: dict | None = None) -> dict[str, float]:
     }
 
 
-def total_frames(stitches: int, p: dict | None = None) -> int:
+def xfem_schedule(p: dict | None = None) -> dict[str, float]:
+    """Times of the phases after the XFEM-type cut [s]: open the wound, hold, press it closed, hold, open, hold."""
     p = PARAMS if p is None else p
+    c = cut_schedule(p)
+    # Each gripper moves gap / 2 in t_pull_apart; the press and the second opening keep that speed.
+    t_press = p["t_pull_apart"] * (p["gap"] + p["press_past_closed"]) / p["gap"]
+    open_end = c["cut_end"] + p["t_pull_apart"]
+    press_start = max(open_end + p["t_hold_open"], c["park_end"])
+    press_end = press_start + t_press
+    reopen_start = press_end + p["t_hold_pressed"]
+    reopen_end = reopen_start + t_press
+    return {
+        "open_start": c["cut_end"],
+        "open_end": open_end,
+        "press_start": press_start,
+        "press_end": press_end,
+        "reopen_start": reopen_start,
+        "reopen_end": reopen_end,
+        "end": reopen_end + p["t_hold_reopen"],
+    }
+
+
+def total_frames(stitches: int, p: dict | None = None, cut_method: str = "faces") -> int:
+    p = PARAMS if p is None else p
+    if cut_method == "xfem":
+        return int(math.ceil(xfem_schedule(p)["end"] * p["fps"])) + 1
     return int(math.ceil((cut_schedule(p)["suture_start"] + schedule(stitches, p)["end"]) * p["fps"])) + 1
+
+
+def _closest_points_on_triangles(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """Closest point to ``p`` on the triangle ``(a, b, c)``, for arrays that broadcast to ``[..., 3]``.
+
+    The region tests are those of Ericson, Real-Time Collision Detection, section 5.1.5.
+    """
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = (ab * ap).sum(-1), (ac * ap).sum(-1)
+    bp = p - b
+    d3, d4 = (ab * bp).sum(-1), (ac * bp).sum(-1)
+    cp = p - c
+    d5, d6 = (ab * cp).sum(-1), (ac * cp).sum(-1)
+    vc = d1 * d4 - d3 * d2
+    vb = d5 * d2 - d1 * d6
+    va = d3 * d6 - d5 * d4
+    with np.errstate(divide="ignore", invalid="ignore"):
+        on_ab = a + ab * (d1 / (d1 - d3))[..., None]
+        on_ac = a + ac * (d2 / (d2 - d6))[..., None]
+        on_bc = b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))[..., None]
+        inside = a + (ab * vb[..., None] + ac * vc[..., None]) / (va + vb + vc)[..., None]
+    shape = inside.shape
+    regions = [
+        (d1 <= 0.0) & (d2 <= 0.0),  # corner a
+        (d3 >= 0.0) & (d4 <= d3),  # corner b
+        (vc <= 0.0) & (d1 >= 0.0) & (d3 <= 0.0),  # edge ab
+        (d6 >= 0.0) & (d5 <= d6),  # corner c
+        (vb <= 0.0) & (d2 >= 0.0) & (d6 <= 0.0),  # edge ac
+        (va <= 0.0) & (d4 - d3 >= 0.0) & (d5 - d6 >= 0.0),  # edge bc
+    ]
+    places = [np.broadcast_to(place, shape) for place in (a, b, on_ab, c, on_ac, on_bc)]
+    return np.select([region[..., None] for region in regions], places, default=inside)
 
 
 class Example:
@@ -292,10 +427,24 @@ class Example:
         self.viewer = viewer
         self.params = dict(PARAMS)
         self.params["cut_arm"] = getattr(args, "cut_arm", None) or PARAMS["cut_arm"]
+        self.cut_method = getattr(args, "cut_method", None) or "faces"
+        self.xfem = self.cut_method == "xfem"
+        if self.xfem:
+            if self.params["cut_arm"] != "gate":
+                raise ValueError("--cut-method xfem runs with --cut-arm gate only")
+            yaw = getattr(args, "blade_yaw_deg", None)
+            if yaw is not None:
+                self.params["blade_yaw_deg"] = float(yaw)
+            self.params["self_contact_kd"] = self.params["xfem_self_contact_kd"]
         self.stitches = int(getattr(args, "stitches", None) or PARAMS["stitches"])
         self.times = schedule(self.stitches)
         self.cut_times = cut_schedule(self.params)
         self.t_suture_start = self.cut_times["suture_start"]
+        if self.xfem:
+            # No stitches with this method yet (the suture tet walk does not know fragments): the suture
+            # script never starts, so the needle stays parked above the block.
+            self.xfem_times = xfem_schedule(self.params)
+            self.t_suture_start = math.inf
         self.frame_dt = 1.0 / self.params["fps"]
         self.sim_substeps = self.params["sim_substeps"]
         self.sim_dt = self.frame_dt / self.sim_substeps
@@ -312,16 +461,32 @@ class Example:
         self._build_needle_and_thread(builder)
         self._build_blade(builder)
         builder.color()
-        # Copies of cut vertices live in a second color group per color, so the two wound faces never share a
-        # Gauss-Seidel color pass (the role of the disjoint block colors in example_vbd_suture.py).
+        # Face cut: copies of cut vertices live in a second color group per color, so the two wound faces never
+        # share a Gauss-Seidel color pass (the role of the disjoint block colors in example_vbd_suture.py).
+        # XFEM-type cut: that does not hold. A wound particle takes a spare of the pool of the vertex of its own
+        # side, so the wound particles of both wound faces are in the same copy colors and many of their contact
+        # pairs are solved in one color pass.
         p = self.params
-        builder.add_cut_capacity(
-            max_vertices=p["cut_max_vertices"],
-            max_faces=p["cut_max_faces"],
-            park_position=p["park_position"],
-            park_spacing=p["park_spacing"],
-            particle_radius=p["particle_radius"],
-        )
+        if self.xfem:
+            # The XFEM-type cut also needs one spare tet per cut tet; its wound particles and virtual
+            # corners come from the same pools, and the wound faces take more surface rows.
+            builder.add_cut_capacity(
+                max_vertices=p["xfem_max_vertices"],
+                max_faces=p["xfem_max_faces"],
+                max_edges=p["xfem_max_edges"],
+                max_tets=p["xfem_max_tets"],
+                park_position=p["xfem_park_position"],
+                park_spacing=p["park_spacing"],
+                particle_radius=p["particle_radius"],
+            )
+        else:
+            builder.add_cut_capacity(
+                max_vertices=p["cut_max_vertices"],
+                max_faces=p["cut_max_faces"],
+                park_position=p["park_position"],
+                park_spacing=p["park_spacing"],
+                particle_radius=p["particle_radius"],
+            )
         self.spare_particles = np.arange(self.tissue_particle_count, builder.particle_count)
         self.model = builder.finalize()
 
@@ -367,24 +532,39 @@ class Example:
             enable_rigid_soft_full_surface_contact=p["full_surface_contact"],
             contact_matching="latest" if p["detection_iterations"] > 0 else "disabled",
         )
-        self.solver = SolverVBD(
-            self.model,
-            iterations=p["solver_iterations"],
-            **schedule_kwargs,
-            rigid_soft_enable_dat=True,
-            particle_enable_self_contact=p["self_contact"],
-            particle_self_contact_margin=p["self_contact_margin"],
-            particle_self_contact_gap=p["self_contact_gap"],
-            particle_topological_contact_filter_threshold=p["self_contact_filter_threshold"],
-            particle_edge_parallel_epsilon=p["edge_parallel_epsilon"],
-            suture_smooth_tangent=p["suture_smooth_tangent"],
-            # The blade edge touches about ten full-surface records per tissue vertex along its whole length.
-            rigid_body_particle_contact_buffer_size=1024,
-            cut_update_interval=p["cut_update_interval"],
-            cut_gate_wound=p["cut_arm"] == "gate",
-            cut_press_wound=p["cut_arm"] == "wound",
-            collision_pipeline=self.collision_pipeline,
-        )
+        cut_kwargs = {}
+        if self.xfem:
+            cut_kwargs = {
+                "cut_method": "xfem",
+                "particle_vertex_contact_buffer_size": p["xfem_vertex_contact_buffer"],
+                "particle_edge_contact_buffer_size": p["xfem_edge_contact_buffer"],
+            }
+        with warnings.catch_warnings():
+            if self.xfem:
+                # Two warnings of the solver that this scene knows and handles (see the module docstring):
+                # the needle stays parked, so no tunnel meets cut tissue; and the cut force is above the
+                # limit of one contact record of the blade edge, with many records under the long blade.
+                warnings.filterwarnings("ignore", message=".*suture does not know fragments.*", category=NewtonWarning)
+                warnings.filterwarnings("ignore", message=".*largest vbd.cut_force.*", category=NewtonWarning)
+            self.solver = SolverVBD(
+                self.model,
+                iterations=p["solver_iterations"],
+                **schedule_kwargs,
+                **cut_kwargs,
+                rigid_soft_enable_dat=True,
+                particle_enable_self_contact=p["self_contact"],
+                particle_self_contact_margin=p["self_contact_margin"],
+                particle_self_contact_gap=p["self_contact_gap"],
+                particle_topological_contact_filter_threshold=p["self_contact_filter_threshold"],
+                particle_edge_parallel_epsilon=p["edge_parallel_epsilon"],
+                suture_smooth_tangent=p["suture_smooth_tangent"],
+                # The blade edge touches about ten full-surface records per tissue vertex along its whole length.
+                rigid_body_particle_contact_buffer_size=1024,
+                cut_update_interval=p["cut_update_interval"],
+                cut_gate_wound=p["cut_arm"] == "gate",
+                cut_press_wound=p["cut_arm"] == "wound",
+                collision_pipeline=self.collision_pipeline,
+            )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -401,6 +581,18 @@ class Example:
         self.upper_open = False
         self.released = False
         self.gap_before_release = None
+        if self.xfem:
+            # The rest shape before any cut: the tets that the blade plane crosses are counted against it.
+            self._rest_q = self.model.particle_q.numpy()[: self.tissue_particle_count].astype(np.float64)
+            self._rest_tets = self.model.tet_indices.numpy().reshape(-1, 4)[: self.tissue_tet_count].copy()
+            self.wound_marks = {}  # the wound, read once at the end of the open hold and of the pressed hold
+            self.finite = True
+            self.max_tie_residual = 0.0
+            # Largest speed of each particle kind [m/s]: over the whole run, and while the wound is held closed.
+            self.max_speed = {"tissue": 0.0, "wound": 0.0, "virtual": 0.0}
+            self.max_speed_pressed = {"tissue": 0.0, "wound": 0.0, "virtual": 0.0}
+            self.max_blade_lead = -math.inf
+            self.max_contact_list = [0, 0]
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(*p["camera_pos"]), 0.0, 0.0)
@@ -610,7 +802,12 @@ class Example:
         p = self.params
         r = p["blade_radius"]
         self.blade_start = np.array([0.0, 0.0, self.tissue_height + p["blade_clearance"] + r])
-        xf = wp.transform(wp.vec3(*self.blade_start), wp.quat_identity())
+        self.blade_rotation = wp.quat_identity()
+        if self.xfem:
+            # Off the mesh planes: the blade plane goes through (blade_x, 0) and is turned about the vertical axis.
+            self.blade_start[0] = p["blade_x"]
+            self.blade_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.radians(p["blade_yaw_deg"]))
+        xf = wp.transform(wp.vec3(*self.blade_start), self.blade_rotation)
         self.blade_holder = builder.add_body(xform=xf, label="cut_blade_holder")
         self.blade = builder.add_body(xform=xf, label="cut_blade")
         cfg = newton.ModelBuilder.ShapeConfig(density=p["blade_density"], mu=p["blade_mu"], has_shape_collision=False)
@@ -662,11 +859,27 @@ class Example:
         if t > c["out_end"]:
             s = min((t - c["out_end"]) / p["t_blade_park"], 1.0)
             pos[2] += (p["blade_park_z"] - pos[2]) * s
-        return wp.transform(wp.vec3(*pos), wp.quat_identity())
+        return wp.transform(wp.vec3(*pos), self.blade_rotation)
 
     def _gripper_shift(self, block: int, t: float) -> np.ndarray:
-        """After the cut each gripper moves gap / 2 away from the cut plane."""
+        """After the cut each gripper moves gap / 2 away from the cut plane.
+
+        With the XFEM-type cut the grippers then press the wound closed, press_past_closed beyond the
+        closed position, and open it again (:func:`xfem_schedule`).
+        """
         p = self.params
+        if self.xfem:
+            x = self.xfem_times
+            times = [
+                x["open_start"],
+                x["open_end"],
+                x["press_start"],
+                x["press_end"],
+                x["reopen_start"],
+                x["reopen_end"],
+            ]
+            opening = [0.0, p["gap"], p["gap"], -p["press_past_closed"], -p["press_past_closed"], p["gap"]]
+            return np.array([(-0.5 if block == 0 else 0.5) * float(np.interp(t, times, opening)), 0.0, 0.0])
         s = min(max((t - self.cut_times["cut_end"]) / p["t_pull_apart"], 0.0), 1.0)
         return np.array([(-0.5 if block == 0 else 0.5) * p["gap"] * s, 0.0, 0.0])
 
@@ -780,12 +993,23 @@ class Example:
             # The blade is through: read the cut counters once, outside the captured graph.
             self.cut_checked = True
             report = self.solver.cut_report()
-            if sum(report["overflow"]) != 0 or report["unsafe"] != 0:
+            if self.xfem:
+                if sum(report["overflow"]) != 0:
+                    wp.utils.warn(
+                        f"cut capacity overflow {report['overflow']} (pools, triangle rows, edge rows, spare tets, "
+                        "tet records); raise xfem_max_vertices, xfem_max_faces, xfem_max_edges or xfem_max_tets"
+                    )
+            elif sum(report["overflow"]) != 0 or report["unsafe"] != 0:
                 wp.utils.warn(
                     f"cut capacity overflow {report['overflow']} or unsafe start gap {report['unsafe']}; "
                     "raise cut_max_vertices or cut_max_faces"
                 )
-        if not hasattr(self, "_face_a") and self.sim_time >= self.t_suture_start - self.frame_dt:
+        if self.xfem:
+            # Read the wound once at the end of the open hold and of the pressed hold, outside the captured graph.
+            for name, key in (("open", "press_start"), ("pressed", "reopen_start")):
+                if name not in self.wound_marks and self.sim_time >= self.xfem_times[key] - 1.0e-9:
+                    self.wound_marks[name] = self.wound_state()
+        elif not hasattr(self, "_face_a") and self.sim_time >= self.t_suture_start - self.frame_dt:
             self._init_faces()  # the cut is done: the two wound faces are known
         self._advance_pull()
         self._set_kinematics(self.sim_time)
@@ -911,6 +1135,178 @@ class Example:
         dist = np.linalg.norm(pts - (a + t[:, None] * d), axis=1)
         return max(float(np.max(float(scale[0]) + self.model.particle_radius.numpy()[free] - dist)), 0.0)
 
+    # ── validation of the XFEM-type cut ─────────────────────────────────
+
+    def blade_plane_normal(self) -> np.ndarray:
+        """Normal of the nominal blade plane; side B of the cut is the side that it points to."""
+        yaw = math.radians(self.params["blade_yaw_deg"])
+        return np.array([math.cos(yaw), math.sin(yaw), 0.0])
+
+    def crossed_tets(self) -> tuple[np.ndarray, float]:
+        """Tets of the rest shape that the nominal blade plane crosses, and the smallest distance of a vertex from it [m]."""
+        origin = np.array([self.params["blade_x"], 0.0, 0.0])
+        level = (self._rest_q - origin) @ self.blade_plane_normal()
+        side = level[self._rest_tets] >= 0.0
+        return np.flatnonzero(side.any(axis=1) & ~side.all(axis=1)), float(np.abs(level).min())
+
+    def tissue_row_parts(self) -> list[int]:
+        """Counts of tets and fragment rows in each connected part of the tissue."""
+        tets = self.model.tet_indices.numpy().reshape(-1, 4)
+        rows = np.flatnonzero(self.solver._xfem["tet_side"].numpy() >= 0)
+        parent = np.arange(self.model.particle_count)
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for row in rows:
+            root = find(int(tets[row, 0]))
+            for v in tets[row, 1:]:
+                parent[find(int(v))] = root
+        counts = {}
+        for row in rows:
+            root = find(int(tets[row, 0]))
+            counts[root] = counts.get(root, 0) + 1
+        return sorted(counts.values())
+
+    def blade_lead(self) -> float:
+        """How far the blade edge is past a crossed tet that is not cut [m]; negative while the cut leads the blade.
+
+        The cut leads the blade edge: a tet that the blade plane crosses is cut before the edge axis
+        reaches it. For every crossed tet that is not cut, the value takes the corner that is
+        farthest along the cutting direction and measures how far the blade edge axis is past it.
+        A positive value means that the blade edge went through tissue that it did not cut.
+        """
+        nominal, _nearest = self.crossed_tets()
+        uncut = nominal[self.solver._xfem["tet_side"].numpy()[nominal] == 0]
+        if len(uncut) == 0:
+            return -math.inf
+        q = self.state_0.particle_q.numpy()
+        blade_q = wp.transform(*self.state_0.body_q.numpy()[self.blade])
+        axis_point = np.array(wp.transform_get_translation(blade_q))  # the edge capsule is centred on the body
+        direction = np.array(wp.quat_rotate(wp.transform_get_rotation(blade_q), wp.vec3(0.0, 0.0, -1.0)))
+        corners = q[self.model.tet_indices.numpy().reshape(-1, 4)[uncut]]  # [T, 4, 3]
+        ahead = (corners - axis_point) @ direction  # [T, 4]; positive: ahead of the edge axis
+        return float((-ahead.max(axis=1)).max())
+
+    def surface_row_errors(self) -> dict[str, int]:
+        """Triangle and edge rows that mix parked and live particles, name a virtual corner, or have a degenerate edge.
+
+        An edge of a live row is degenerate when it is shorter than the square root of
+        ``edge_parallel_epsilon``: such an edge acts as a point in edge-edge self contact.
+        """
+        capacity = self.model.cut_capacity
+        flags = self.model.particle_flags.numpy()
+        q = self.state_0.particle_q.numpy()
+        ghost = self.solver._xfem["particle_ghost"].numpy()
+        parked = np.zeros(self.model.particle_count, dtype=bool)
+        parked[capacity["particle_start"] : capacity["particle_end"]] = True
+        parked &= (flags & int(newton.ParticleFlags.ACTIVE)) == 0
+        triangles = self.model.tri_indices.numpy().reshape(-1, 3)
+        edges = self.model.edge_indices.numpy().reshape(-1, 4)[:, 2:]
+        triangle_parked = parked[triangles].sum(axis=1)
+        edge_parked = parked[edges].sum(axis=1)
+        live_triangles = triangles[triangle_parked == 0]
+        live_edges = edges[edge_parked == 0]
+        x = q[live_triangles]
+        shortest = np.min(
+            [np.linalg.norm(x[:, a] - x[:, b], axis=1) for a, b in ((0, 1), (1, 2), (2, 0))],
+            axis=0,
+        )
+        edge_length = np.linalg.norm(q[live_edges[:, 0]] - q[live_edges[:, 1]], axis=1)
+        point_length = math.sqrt(self.params["edge_parallel_epsilon"])
+        return {
+            "mixed": int(((triangle_parked > 0) & (triangle_parked < 3)).sum()) + int((edge_parked == 1).sum()),
+            "virtual_corner": int(ghost[live_triangles].any(axis=1).sum()) + int(ghost[live_edges].any(axis=1).sum()),
+            "degenerate": int((shortest < point_length).sum()) + int((edge_length < point_length).sum()),
+            "shortest": float(min(shortest.min(), edge_length.min())),
+        }
+
+    def wound_state(self) -> dict[str, float]:
+        """The two wound faces, read on the host [m].
+
+        ``gap_mean`` and ``gap_min`` are the mean and the smallest distance along the blade plane normal
+        between the two wound particles of one cut mesh edge (side B minus side A). ``face_distance`` is
+        the smallest signed distance of a wound particle from the wound face of the other side: the
+        distance to the nearest wound triangle of that side, negative when the particle is behind it.
+        ``mean_plane_distance`` is the smallest distance along the normal of a wound particle from the
+        mean place of the wound particles of the other side. A value of zero or less means that the
+        wound faces passed through each other. ``tie_residual`` is the largest distance of a wound
+        particle from its tie target. All values are ``nan`` before the first cut advance.
+        """
+        x = self.solver._xfem
+        q = self.state_0.particle_q.numpy().astype(np.float64)
+        normal = self.blade_plane_normal()
+        side = x["wound_side"].numpy()
+        edge_wound = x["edge_wound"].numpy()
+        pairs = edge_wound[(edge_wound[:, 0] >= 0) & (edge_wound[:, 1] >= 0)]
+        state = dict.fromkeys(("gap_mean", "gap_min", "face_distance", "mean_plane_distance", "tie_residual"), math.nan)
+        if len(pairs) == 0:
+            return state
+        gap = (q[pairs[:, 1]] - q[pairs[:, 0]]) @ normal
+        state["gap_mean"] = float(gap.mean())
+        state["gap_min"] = float(gap.min())
+        level_a = q[side == 0] @ normal
+        level_b = q[side == 1] @ normal
+        state["mean_plane_distance"] = float(min(level_b.min() - level_a.mean(), level_b.mean() - level_a.max()))
+        triangles = self.model.tri_indices.numpy().reshape(-1, 3)
+        flags = self.model.particle_flags.numpy()
+        wound_rows = (x["tri_kind"].numpy() == 2) & (flags[triangles[:, 0]] != 0)  # wound triangle rows in use
+        row_side = x["tri_sub"].numpy() // 2
+        smallest = math.inf
+        for face_side in (0, 1):
+            corners = q[triangles[wound_rows & (row_side == face_side)]]  # [F, 3, 3]
+            points = q[side == 1 - face_side]  # [P, 3]
+            if len(corners) == 0 or len(points) == 0:
+                continue
+            a, b, c = corners[None, :, 0], corners[None, :, 1], corners[None, :, 2]
+            offset = points[:, None, :] - _closest_points_on_triangles(points[:, None, :], a, b, c)  # [P, F, 3]
+            distance = np.linalg.norm(offset, axis=2)
+            nearest = np.argmin(distance, axis=1)
+            rows = np.arange(len(points))
+            face_normal = np.cross(corners[nearest, 1] - corners[nearest, 0], corners[nearest, 2] - corners[nearest, 0])
+            front = (offset[rows, nearest] * face_normal).sum(axis=1) >= 0.0
+            smallest = min(smallest, float(np.where(front, distance[rows, nearest], -distance[rows, nearest]).min()))
+        state["face_distance"] = smallest
+        residual = x["tie_residual"].numpy()[x["wound_edge"].numpy() >= 0]
+        state["tie_residual"] = float(residual.max()) if len(residual) else 0.0
+        return state
+
+    def _track_xfem(self):
+        """Per-frame readings of the XFEM-type cut (test mode): finite state, largest speeds, tie residual, list sizes."""
+        q = self.state_0.particle_q.numpy()
+        qd = self.state_0.particle_qd.numpy()
+        self.finite = bool(
+            self.finite
+            and np.isfinite(q).all()
+            and np.isfinite(qd).all()
+            and np.isfinite(self.state_0.body_q.numpy()).all()
+        )
+        x = self.solver._xfem
+        active = (self.model.particle_flags.numpy() & int(newton.ParticleFlags.ACTIVE)) != 0
+        speed = np.where(active, np.linalg.norm(qd, axis=1), 0.0)
+        wound = x["wound_edge"].numpy() >= 0
+        virtual = x["particle_ghost"].numpy() != 0
+        tissue = ~wound & ~virtual
+        # The pressed hold, without its first quarter second: the wound settles after the grippers stop.
+        times = self.xfem_times
+        held_closed = times["press_end"] + 0.25 <= self.sim_time <= times["reopen_start"] + 1.0e-9
+        for kind, mask in (("tissue", tissue), ("wound", wound), ("virtual", virtual)):
+            if mask.any():
+                largest = float(speed[mask].max())
+                self.max_speed[kind] = max(self.max_speed[kind], largest)
+                if held_closed:
+                    self.max_speed_pressed[kind] = max(self.max_speed_pressed[kind], largest)
+        if wound.any():
+            self.max_tie_residual = max(self.max_tie_residual, float(x["tie_residual"].numpy()[wound].max()))
+        info = self.solver.trimesh_collision_info
+        self.max_contact_list[0] = max(
+            self.max_contact_list[0], int(info.vertex_colliding_triangles_count.numpy().max())
+        )
+        self.max_contact_list[1] = max(self.max_contact_list[1], int(info.edge_colliding_edges_count.numpy().max()))
+
     def max_row_residual(self) -> float:
         """Largest transverse distance from an active tunnel point to its rod place [m]."""
         solver = self.solver
@@ -978,6 +1374,13 @@ class Example:
 
     def test_post_step(self):
         cutting = self.sim_time < self.cut_times["cut_end"] + self.params["t_pull_apart"]
+        if self.xfem:
+            if cutting and self.frame % 5 == 0:
+                self.max_blade_penetration = max(self.max_blade_penetration, self.blade_penetration())
+            if self.sim_time <= self.cut_times["cut_end"]:
+                self.max_blade_lead = max(self.max_blade_lead, self.blade_lead())
+            self._track_xfem()
+            return
         if cutting and self.frame % 5 == 0:
             self.max_blade_penetration = max(self.max_blade_penetration, self.blade_penetration())
             self.min_lip_gap = min(self.min_lip_gap, self.lip_gap())
@@ -986,8 +1389,69 @@ class Example:
             self.max_residual = max(self.max_residual, self.max_row_residual())
             self.tunnels_seen = max(self.tunnels_seen, int(self.solver._suture_tunnel_count.numpy()[0]))
 
+    def _check_cut_xfem(self, *, blade_penetration_bound: float):
+        """The criteria of the XFEM-type cut: the crossed tets are cut once, two parts, mass, no overflow, rows, blade."""
+        x = self.solver._xfem
+        report = self.solver.cut_report()
+        nominal, nearest = self.crossed_tets()
+        tet_side = x["tet_side"].numpy()
+        cut_rows = np.flatnonzero(tet_side[: self.tissue_tet_count] == 1)
+        if not np.array_equal(cut_rows, nominal):
+            raise AssertionError(
+                f"the blade plane crosses {len(nominal)} tets and {len(cut_rows)} are cut: "
+                f"{len(np.setdiff1d(nominal, cut_rows))} crossed tets are not cut and "
+                f"{len(np.setdiff1d(cut_rows, nominal))} cut tets are not crossed "
+                f"(nearest vertex {nearest * 1e3:.3f} mm from the plane)"
+            )
+        slots = x["tet_slot"].numpy()[cut_rows]
+        twins = x["tet_twin"].numpy()[cut_rows]
+        fragments_b = int((tet_side == 2).sum())
+        if (
+            len(np.unique(slots)) != len(cut_rows)
+            or len(np.unique(twins)) != len(cut_rows)
+            or not (tet_side[twins] == 2).all()
+            or fragments_b != len(cut_rows)
+            or report["spare_tets_taken"] != len(cut_rows)
+        ):
+            raise AssertionError(
+                f"a tet is not cut exactly once: {len(cut_rows)} cut tets, {len(np.unique(slots))} cut slots, "
+                f"{fragments_b} fragment rows of side B, {report['spare_tets_taken']} spare tets taken"
+            )
+        parts = self.tissue_row_parts()
+        if len(parts) != 2:
+            raise AssertionError(f"expected two tissue parts after the cut, found tet and fragment counts {parts}")
+        if sum(report["overflow"]) != 0:
+            raise AssertionError(
+                f"cut capacity overflow {report['overflow']} (pools, triangle rows, edge rows, spare tets, tet records)"
+            )
+        mass = float(self.model.particle_mass.numpy().sum())
+        if abs(mass - self.particle_mass_0) > 1.0e-5 * self.particle_mass_0:
+            raise AssertionError(f"particle mass changed from {self.particle_mass_0:.6g} to {mass:.6g} kg")
+        rows = self.surface_row_errors()
+        if rows["mixed"] or rows["virtual_corner"] or rows["degenerate"]:
+            raise AssertionError(
+                f"surface rows: {rows['mixed']} mix parked and live particles, {rows['virtual_corner']} name a "
+                f"virtual corner, {rows['degenerate']} have an edge that acts as a point (shortest edge "
+                f"{rows['shortest'] * 1e3:.3f} mm)"
+            )
+        if self.max_blade_penetration > blade_penetration_bound:
+            raise AssertionError(
+                f"blade edge penetrated tissue that it has contact with by {self.max_blade_penetration * 1e3:.3f} mm, "
+                f"bound {blade_penetration_bound * 1e3:.2f} mm"
+            )
+        # With the blade plane in the middle of a cell the bound above cannot trip (the nearest particles with
+        # blade contact are the front wound particles, half a start gap off the plane). This one can.
+        if self.max_blade_lead > 0.0:
+            raise AssertionError(
+                f"the blade edge went {self.max_blade_lead * 1e3:.3f} mm past a tet that the blade plane crosses and "
+                "that was not cut"
+            )
+
     def check_cut(self, *, blade_penetration_bound: float = 0.5e-3):
         """The cut criteria: the faces of the cut plane are cut, two parts, no overflow, bounded blade penetration."""
+        if self.xfem:
+            self._check_cut_xfem(blade_penetration_bound=blade_penetration_bound)
+            return
         p = self.params
         report = self.solver.cut_report()
         expected_faces = 2 * p["block_cells"][1] * p["block_cells"][2]
@@ -1061,11 +1525,118 @@ class Example:
                     f"bound {hang_bound * 1e3:.1f} mm"
                 )
 
+    def _check_final_xfem(
+        self,
+        *,
+        residual_rest_bound: float,
+        residual_pressed_bound: float,
+        residual_bound: float,
+        open_tolerance: float,
+        closed_tolerance: float,
+        speed_bound: float,
+        speed_spare_bound: float,
+        speed_pressed_bound: float,
+    ):
+        """The criteria of the XFEM-type cut and of the wound that the grippers open, press closed and open again."""
+        p = self.params
+        self.check_cut()
+        self._track_xfem()
+        if not self.finite:
+            raise AssertionError("simulation produced non-finite state")
+        missing = [name for name in ("open", "pressed") if name not in self.wound_marks]
+        if missing:
+            raise AssertionError(
+                f"the run ended at {self.sim_time:.2f} s, before the end of the pressed hold at "
+                f"{self.xfem_times['reopen_start']:.2f} s; run {total_frames(self.stitches, p, 'xfem')} frames"
+            )
+        opened, pressed = self.wound_marks["open"], self.wound_marks["pressed"]
+        # The open wound: the gripper travel along the blade plane normal plus the start gap.
+        start_gap = self.solver._cut_start_gap
+        open_width = p["gap"] * math.cos(math.radians(p["blade_yaw_deg"])) + start_gap
+        if abs(opened["gap_mean"] - open_width) > open_tolerance * open_width:
+            raise AssertionError(
+                f"the grippers opened the wound to {opened['gap_mean'] * 1e3:.2f} mm, not within "
+                f"{open_tolerance * 100.0:.0f} percent of {open_width * 1e3:.2f} mm (gripper travel plus start gap)"
+            )
+        # The press goes past the start gap, so without self contact the wound faces pass through each other
+        # and every value below is negative.
+        if p["press_past_closed"] <= start_gap:
+            raise AssertionError(
+                f"press_past_closed ({p['press_past_closed'] * 1e3:.2f} mm) is not past the start gap "
+                f"({start_gap * 1e3:.2f} mm): the pass-through check cannot fail"
+            )
+        if min(pressed["face_distance"], pressed["mean_plane_distance"], pressed["gap_min"]) <= 0.0:
+            raise AssertionError(
+                "the wound faces passed through each other while pressed closed: smallest signed distance of a "
+                f"wound particle from the other wound face {pressed['face_distance'] * 1e3:.3f} mm, from the mean "
+                f"plane of the other side {pressed['mean_plane_distance'] * 1e3:.3f} mm, smallest gap of an edge "
+                f"pair {pressed['gap_min'] * 1e3:.3f} mm"
+            )
+        # Self contact acts within the margin, so the pressed wound faces rest about one margin apart.
+        margin = p["self_contact_margin"]
+        if abs(pressed["gap_mean"] - margin) > closed_tolerance * margin:
+            raise AssertionError(
+                f"the pressed wound is {pressed['gap_mean'] * 1e3:.3f} mm wide, not within "
+                f"{closed_tolerance * 100.0:.0f} percent of the self-contact margin ({margin * 1e3:.2f} mm)"
+            )
+        for label, value, bound in (
+            ("at rest with the wound open", opened["tie_residual"], residual_rest_bound),
+            ("with the wound pressed closed", pressed["tie_residual"], residual_pressed_bound),
+            ("largest of the run", self.max_tie_residual, residual_bound),
+        ):
+            if value > bound:
+                raise AssertionError(f"tie residual {label} is {value * 1e3:.4f} mm, bound {bound * 1e3:.3f} mm")
+        for kind, value in self.max_speed.items():
+            bound = speed_bound if kind == "tissue" else speed_spare_bound
+            if value > bound:
+                raise AssertionError(
+                    f"largest speed of a {kind} particle is {value * 1e3:.1f} mm/s, bound {bound * 1e3:.0f} mm/s"
+                )
+        for kind, value in self.max_speed_pressed.items():
+            if value > speed_pressed_bound:
+                raise AssertionError(
+                    f"the pressed wound is not calm: a {kind} particle moves at {value * 1e3:.2f} mm/s during the "
+                    f"hold, bound {speed_pressed_bound * 1e3:.1f} mm/s"
+                )
+        sizes = (p["xfem_vertex_contact_buffer"], p["xfem_edge_contact_buffer"])
+        if self.max_contact_list[0] > sizes[0] or self.max_contact_list[1] > sizes[1]:
+            raise AssertionError(
+                f"a self-contact list overflowed: {self.max_contact_list[0]} triangles at one vertex (size "
+                f"{sizes[0]}), {self.max_contact_list[1]} edges at one edge row (size {sizes[1]})"
+            )
+
     def test_final(self):
         """Robust invariants: two through tunnels per stitch, finite state, bounded penetration, wound closed to
         within half a tet edge before the release, and the released block hanging on the stitches. Run-to-run
         variation on the GPU (decisions I19, I21) keeps the design's tighter bounds out of this test; see
-        :meth:`check_final_strict`."""
+        :meth:`check_final_strict`.
+
+        With the XFEM-type cut: the criteria of :meth:`_check_final_xfem`. The tie is a spring, so its residual
+        is the force on the wound particle divided by the tie stiffness. The bounds come from the values measured
+        with the blade at mid cell and turned by 8 degrees (the larger value is given):
+
+        - Tie residual: 0.005 mm at rest with the wound open (measured 0.0008 mm), 0.2 mm with the wound pressed
+          closed (0.086 mm) and 0.5 mm at any time (0.24 mm, on a front wound particle under the blade).
+        - Open wound: within 5 percent of the gripper travel along the blade plane normal plus the start gap
+          (1.6 percent below it with the blade turned, where some edges hold less than the start gap).
+        - Pressed wound: mean width within 10 percent of the self-contact margin (5.3 percent below it).
+        - Speeds: 0.5 m/s for a tissue particle and 1 m/s for a wound particle or a virtual corner at any time
+          (0.12 m/s; a virtual corner of a thin fragment can be fast for a frame), and 2 mm/s for every
+          particle while the wound is held closed (0.5 mm/s; with self-contact damping the wound shivers at
+          20 to 90 mm/s).
+        """
+        if self.xfem:
+            self._check_final_xfem(
+                residual_rest_bound=0.005e-3,
+                residual_pressed_bound=0.2e-3,
+                residual_bound=0.5e-3,
+                open_tolerance=0.05,
+                closed_tolerance=0.1,
+                speed_bound=0.5,
+                speed_spare_bound=1.0,
+                speed_pressed_bound=2.0e-3,
+            )
+            return
         self._check_final(gap_bound=1.5e-3, residual_bound=1.0e-3, penetration_bound=0.5e-3, hang_bound=10.0e-3)
 
     def check_final_strict(self):
@@ -1082,6 +1653,20 @@ class Example:
             choices=("gate", "wound", "design"),
             default=PARAMS["cut_arm"],
             help="How the cut goes on below the first tet row (see PARAMS['cut_arm']).",
+        )
+        parser.add_argument(
+            "--cut-method",
+            choices=("faces", "xfem"),
+            default="faces",
+            help="faces: the cut follows tet faces, then the suture. xfem: the blade is off the mesh planes and "
+            "the cut goes through the tets; the grippers open the wound, press it closed and open it again "
+            f"(no suture; {total_frames(PARAMS['stitches'], cut_method='xfem')} frames).",
+        )
+        parser.add_argument(
+            "--blade-yaw-deg",
+            type=float,
+            default=PARAMS["blade_yaw_deg"],
+            help="Turn of the blade about the vertical axis [deg]; --cut-method xfem only.",
         )
         parser.set_defaults(num_frames=total_frames(PARAMS["stitches"]))
         return parser

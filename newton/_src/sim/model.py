@@ -1331,8 +1331,8 @@ class Model:
         self.cut_capacity: dict | None = None
         """Scalars of the pre-allocated cut capacity (see :meth:`ModelBuilder.add_cut_capacity`): ``color_count``,
         ``copy_colors``, ``spare_count``, ``tri_spare_start``, ``tri_spare_count``, ``edge_spare_start``,
-        ``edge_spare_count``, ``idle_tet``, ``particle_start``, ``particle_end``, ``park_lower``, ``park_upper``.
-        ``None`` when the model has no cut capacity."""
+        ``edge_spare_count``, ``tet_spare_start``, ``tet_spare_count``, ``idle_tet``, ``particle_start``,
+        ``particle_end``, ``park_lower``, ``park_upper``. ``None`` when the model has no cut capacity."""
         self.cut_spare_start: wp.array[wp.int32] | None = None
         """First spare particle of the pool of each original particle color, shape [color_count], int."""
         self.cut_row_park_particle: wp.array[wp.int32] | None = None

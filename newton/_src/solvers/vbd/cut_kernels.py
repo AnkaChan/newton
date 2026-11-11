@@ -32,6 +32,10 @@ CUT_FORCE_UNCUTTABLE = wp.constant(1.0e30)
 # Contact gate bit of the wound particles of a cut (needle bits are ``1 << needle`` with needle < 30).
 CUT_GATE_BIT = 1 << 30
 
+# Contact gate bit 31 (the sign bit of an int32) of a ghost: a virtual corner of the XFEM-type cut
+# (``cut_method="xfem"``) is not material, so every shape carries this bit and has no contact with it.
+CUT_GHOST_GATE_BIT = -(1 << 31)
+
 # Largest number of distinct cut face normals at one particle that the start gap direction handles.
 _MAX_GAP_NORMALS = 16
 
@@ -57,6 +61,9 @@ def build_padded_tet_adjacency(
     v_adj_tets_offsets: np.ndarray,
     spare_particles: np.ndarray,
     idle_tet: int,
+    *,
+    dropped_tets: np.ndarray | None = None,
+    doubled_particles: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Return a vertex-to-tet table in which every spare particle has room for the tets of a copy.
 
@@ -65,28 +72,47 @@ def build_padded_tet_adjacency(
         v_adj_tets_offsets: Offsets into ``v_adj_tets`` in int32 values, shape ``[particle_count + 1]``.
         spare_particles: Indices of the spare particles.
         idle_tet: Index of the idle tet.
+        dropped_tets: Indices of tets whose tet records are left out (the spare tets: they sit
+            on the corners of the idle tet until a cut writes a fragment into them).
+        doubled_particles: Indices of particles that get as many free tet records as they have tets
+            (the XFEM-type cut: a vertex at the cut front is a corner of both fragment rows of a
+            cut tet). With this argument a spare particle gets ``2 * Q`` tet records.
 
     Returns:
         The new flat pairs, the new offsets, and ``Q``, the largest number of tets at one vertex.
-        A spare particle gets ``Q`` tet records ``(idle_tet, 0)``.
+        A spare particle gets ``Q`` tet records ``(idle_tet, 0)``; a free tet record of another
+        particle is ``(idle_tet, 0)`` too.
     """
     offsets = np.asarray(v_adj_tets_offsets, dtype=np.int64)
-    pairs = np.asarray(v_adj_tets, dtype=np.int32)
+    pairs = np.asarray(v_adj_tets, dtype=np.int32).reshape(-1, 2)
     particle_count = offsets.shape[0] - 1
-    counts = (offsets[1:] - offsets[:-1]) // 2
-    q = int(counts.max()) if particle_count > 0 else 0
-    new_counts = counts.copy()
-    new_counts[spare_particles] = q
-    new_offsets = np.zeros(particle_count + 1, dtype=np.int64)
-    new_offsets[1:] = np.cumsum(2 * new_counts)
-    new_pairs = np.empty(int(new_offsets[-1]), dtype=np.int32)
-    new_pairs[0::2] = idle_tet
-    new_pairs[1::2] = 0
+    owner = np.repeat(np.arange(particle_count), (offsets[1:] - offsets[:-1]) // 2)
+    if dropped_tets is not None and len(dropped_tets) > 0:
+        keep = ~np.isin(pairs[:, 0], dropped_tets)
+        pairs = pairs[keep]
+        owner = owner[keep]
+    counts = np.bincount(owner, minlength=particle_count).astype(np.int64)
     is_spare = np.zeros(particle_count, dtype=bool)
     is_spare[spare_particles] = True
-    for p in np.flatnonzero(~is_spare & (counts > 0)):
-        new_pairs[new_offsets[p] : new_offsets[p + 1]] = pairs[offsets[p] : offsets[p + 1]]
-    return new_pairs, new_offsets.astype(np.int32), q
+    q = int(counts[~is_spare].max()) if (~is_spare).any() else 0
+    new_counts = counts.copy()
+    if doubled_particles is not None:
+        new_counts[doubled_particles] = 2 * counts[doubled_particles]
+        new_counts[spare_particles] = 2 * q
+    else:
+        new_counts[spare_particles] = q
+    new_offsets = np.zeros(particle_count + 1, dtype=np.int64)
+    new_offsets[1:] = np.cumsum(2 * new_counts)
+    new_pairs = np.empty((int(new_offsets[-1]) // 2, 2), dtype=np.int32)
+    new_pairs[:, 0] = idle_tet
+    new_pairs[:, 1] = 0
+    # The records of one particle stay in their order at the start of its block.
+    first = np.zeros(particle_count + 1, dtype=np.int64)
+    first[1:] = np.cumsum(counts)
+    live = ~is_spare[owner]
+    rank = np.arange(len(owner)) - first[owner]
+    new_pairs[new_offsets[owner[live]] // 2 + rank[live]] = pairs[live]
+    return new_pairs.reshape(-1), new_offsets.astype(np.int32), q
 
 
 def build_cut_row_sources(
