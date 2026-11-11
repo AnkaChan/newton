@@ -131,7 +131,16 @@ class _Scene:
     """The block, a blade and the cut capacity, finalized on ``device``."""
 
     def __init__(
-        self, device, *, cut_force=0.5, yaw_deg=0.0, offset=0.0, capacity=None, capture=False, **solver_kwargs
+        self,
+        device,
+        *,
+        cut_force=0.5,
+        yaw_deg=0.0,
+        offset=0.0,
+        capacity=None,
+        capture=False,
+        before_color=None,
+        **solver_kwargs,
     ):
         builder = _builder_with_block()
         self.tissue_count = builder.particle_count
@@ -144,6 +153,8 @@ class _Scene:
         self.hold_rest_a = q[self.hold_a].copy()
         self.hold_rest_b = q[self.hold_b].copy()
         self.holder, self.blade, self.edge, self.start, self.rotation = _add_blade(builder, yaw_deg, offset)
+        # A test can add more bodies (a suture needle) before the particles are colored.
+        self.extra = before_color(builder) if before_color is not None else None
         builder.color()
         _add_capacity(builder, **(capacity or {}))
         self.model = builder.finalize(device=device)
@@ -1149,17 +1160,19 @@ def test_xfem_capacity_and_rules(test, device):
     plain.color()
     with test.assertWarnsRegex(NewtonWarning, "no cut capacity"):
         _solver(plain.finalize(device=device), cut_method="xfem")
-    # The suture does not know fragments yet.
-    with test.assertWarnsRegex(NewtonWarning, "suture needles"):
-        _solver(scene_model(needle=True, **XFEM_CAPACITY), **xfem)
     # The blade force has an upper limit with the penalty law: 500 N/m times 0.5 mm per contact record.
     with test.assertWarnsRegex(NewtonWarning, r"largest vbd.cut_force \(0.5 N\).*\(0.25 N"):
         _solver(scene_model(**XFEM_CAPACITY), cut_method="xfem")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the builder corrects the inertia of the thin needle body
+        needle_model = scene_model(needle=True, **XFEM_CAPACITY)
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # these solvers must not warn
         _solver(scene_model(cut_force=0.2, **XFEM_CAPACITY), cut_method="xfem")
         _solver(scene_model(**XFEM_CAPACITY), cut_method="xfem", rigid_soft_contact_use_log_barrier=True)
         _solver(scene_model(**XFEM_CAPACITY), cut_method="faces")
+        # Suture needles work on tissue cut with this method (test_cut_suture_xfem.py).
+        _solver(needle_model, **xfem)
         # Spare tets do not change the tables of the cut along tet faces.
         solver = _solver(scene_model(**XFEM_CAPACITY))
         neighbors = solver._tet_neighbors.numpy()

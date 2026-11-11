@@ -156,6 +156,7 @@ from .rigid_vbd_kernels import (
     update_rod_dahl_state,
 )
 from .suture_kernels import (
+    SutureFragmentData,
     SuturePointData,
     SutureRodData,
     accumulate_suture_row_force_and_hessian,
@@ -164,6 +165,7 @@ from .suture_kernels import (
     begin_suture_update,
     build_tet_neighbors,
     initialize_suture_points,
+    mark_suture_tets,
     refresh_suture_points,
     update_duals_suture_points,
     update_suture_gate,
@@ -957,8 +959,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 - A cut advance is all or nothing: when the cut capacity cannot hold the spare tets,
                   the wound particles and the extra surface rows of the advance, no tet is cut in
                   that cut update and :meth:`cut_report` counts the overflow.
-                - The suture does not know fragments yet. A model with suture needles gives a
-                  warning; keep the needles away from cut tissue.
+                - Suture needles work on tissue that is already cut: a tunnel can enter and leave
+                  through a wound face, and its tunnel points lie in the fragment row of their
+                  side. The other order is not supported: a tet that holds a tunnel point of a
+                  tunnel that is not finished, or the tip of a growing tunnel, is not cut. It
+                  stays whole, the cut stops there, and :meth:`cut_report` counts it in
+                  ``blocked_by_tunnel``. A particle reset undoes every cut and also clears every
+                  tunnel.
                 - ``vbd.cut_force`` is read at every cut update, so a scene can change it after
                   construction, also from not cuttable to cuttable, and :meth:`reset` keeps the
                   values of the tissue. The rules for a cuttable particle (not the end of a spring,
@@ -4216,14 +4223,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 NewtonWarning,
                 stacklevel=4,
             )
-        if int(getattr(model, "suture_needle_count", 0) or 0) > 0:
-            warnings.warn(
-                'cut_method="xfem" on a model with suture needles: the suture does not know fragments yet. A '
-                "tunnel through a cut tet binds to fragment A only, and no tunnel opens at a wound face. Keep "
-                "the needles away from cut tissue.",
-                NewtonWarning,
-                stacklevel=4,
-            )
         if (
             self._cut_blade_count > 0
             and cut_force_max > 0.0
@@ -4364,6 +4363,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             "edge_slot": int_array(edge_slot),  # [R] cut slot of a wound row
             "edge_extra": full(model.edge_count, -1),  # [R] extra row of a cut skin edge
             "edge_extra_taken": full(1, 0),  # extra edge rows taken
+            "tet_tunnel_stamp": full(tet_count, -1),  # [T] cut update number in which the tet held a suture tunnel
+            "tunnel_blocked": full(1, 0),  # tets that an advance left whole because they hold a suture tunnel
         }
         self._xfem_twin_group = wp.full(max(record_count, 1), -1, dtype=wp.int32, device=device)
         # Arrays that both tie kernels read to find the two corners and the place of each tie.
@@ -4440,6 +4441,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             for name, array in self._xfem.items():
                 wp.copy(array, self._xfem_saved[name])
             gate_bits = CUT_GATE_BIT | CUT_GHOST_GATE_BIT
+            # A tunnel point can lie in a fragment row that is a spare tet again after this reset:
+            # the reset clears every tunnel.
+            if self.suture_needle_count > 0:
+                self._reset_suture_tunnels()
         wp.launch(
             kernel=clear_cut_gate_bit,
             dim=model.particle_count,
@@ -4774,6 +4779,22 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             outputs=[x["edge_t"], x["edge_half_gap_t"], x["edge_gap_limited"], x["edge_pending"]],
             device=device,
         )
+        # A tet that holds a suture tunnel is not cut: stamp those tets with the number of this cut update.
+        if self.suture_needle_count > 0:
+            wp.launch(
+                kernel=mark_suture_tets,
+                dim=self._suture_point_total,
+                inputs=[
+                    due,
+                    self._cut_update_number,
+                    self._suture_points,
+                    self._suture_tunnel_state,
+                    self._suture_needle_state,
+                    self._suture_needle_tip_tet,
+                ],
+                outputs=[x["tet_tunnel_stamp"]],
+                device=device,
+            )
         # What the advance wants to cut and what that needs: spare tets, spare particles for the wound
         # particles, extra surface rows. The advance goes on only when all of it fits.
         wp.launch(
@@ -4795,8 +4816,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 x["tet_vertex"],
                 x["tet_mesh_edge"],
                 x["tet_side"],
+                self._cut_update_number,
+                x["tet_tunnel_stamp"],
             ],
-            outputs=[x["tet_pending"], x["edge_pending"], x["demand"]],
+            outputs=[x["tet_pending"], x["edge_pending"], x["demand"], x["tunnel_blocked"]],
             device=device,
         )
         wp.launch(
@@ -5214,6 +5237,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             clipped skin triangles, of cut skin edges and of front edges),
             ``start_gap_limited_edges`` (cut mesh edges that are too short along the blade plane
             normal to hold ``cut_start_gap`` between their two wound particles),
+            ``blocked_by_tunnel`` (grows by one for every cut update and every tet that the advance
+            left whole because the tet holds a suture tunnel),
             ``tie_residual_max`` (largest distance of a wound particle from its tie target at the
             last iteration [m]), ``blade_force`` and ``updates``.
 
@@ -5262,6 +5287,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "edge_rows_taken": int((tet_side == 1).sum()) * XFEM_WOUND_EDGES_PER_TET
                 + min(int(x["edge_extra_taken"].numpy()[0]), extra_edges),
                 "start_gap_limited_edges": int((has_wound & (x["edge_gap_limited"].numpy() != 0)).sum()),
+                "blocked_by_tunnel": int(x["tunnel_blocked"].numpy()[0]),
                 "overflow": overflow.tolist(),
                 "overflow_pools": int(overflow[:color_count].sum()),
                 "overflow_triangle_rows": int(overflow[color_count]),
@@ -5466,6 +5492,57 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         pts.friction_transverse_weight = self.suture_friction_transverse_weight
         self._suture_points = pts
         self._suture_point_total = total
+
+        # Tables of the XFEM-type cut for the entry search and the tet walk. Every other model gets
+        # placeholders that no kernel reads (enabled == 0).
+        fragments = SutureFragmentData()
+        if self._cut_xfem:
+            x = self._xfem
+            fragments.enabled = 1
+            fragments.tet_side = x["tet_side"]
+            fragments.tet_twin = x["tet_twin"]
+            fragments.tet_first = x["tet_first"]
+            fragments.tet_vertex = x["tet_vertex"]
+            fragments.particle_level = x["particle_level"]
+            fragments.wound_edge = x["wound_edge"]
+            fragments.wound_side = x["wound_side"]
+            fragments.edge_owner = x["edge_owner"]
+        else:
+            empty = wp.zeros(1, dtype=wp.int32, device=device)
+            empty_pairs = wp.zeros((1, 2), dtype=wp.int32, device=device)
+            fragments.enabled = 0
+            fragments.tet_side = empty
+            fragments.tet_twin = empty
+            fragments.tet_first = empty
+            fragments.tet_vertex = self._suture_empty_tets
+            fragments.particle_level = wp.zeros(1, dtype=float, device=device)
+            fragments.wound_edge = empty
+            fragments.wound_side = empty
+            fragments.edge_owner = empty_pairs
+        self._suture_fragments = fragments
+
+    def _reset_suture_tunnels(self) -> None:
+        """Clear every tunnel and the needle state, as at construction. The needle bits of the contact gate
+        are cleared at the next gate update."""
+        self._suture_point_tet.fill_(-1)
+        self._suture_point_segment.fill_(-1)
+        self._suture_point_segment_start.fill_(-1)
+        self._suture_needle_tunnel.fill_(-1)
+        self._suture_needle_tip_tet.fill_(-1)
+        for array in (
+            self._suture_point_active,
+            self._suture_point_lambda,
+            self._suture_point_lambda_t,
+            self._suture_needle_state,
+            self._suture_tunnel_count,
+            self._suture_tunnel_state,
+            self._suture_tunnel_point_count,
+            self._suture_needle_travel,
+            self._suture_needle_tip_force,
+            self._suture_needle_tip_record_key,
+            self._suture_needle_entered,
+        ):
+            array.zero_()
 
     def _suture_tet_indices(self) -> wp.array:
         """The tet index array viewed as ``[tet_count, 4]``."""
@@ -5678,6 +5755,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._suture_needle_tip_record_key,
                 self._suture_point_overflow,
                 self._cut_idle_tet,
+                self._suture_fragments,
             ],
             device=self.device,
         )

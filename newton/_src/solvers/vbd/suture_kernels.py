@@ -117,6 +117,31 @@ class SuturePointData:
     friction_transverse_weight: float
 
 
+@wp.struct
+class SutureFragmentData:
+    """Tables of the XFEM-type cut that the entry search and the tet walk read.
+
+    ``enabled`` is 0 for a model without the XFEM-type cut; the arrays are then placeholders and no
+    function reads them. The tables belong to the cut (``cut_xfem_kernels.py``): ``tet_side`` is 0
+    for a tet that is not cut, 1 for fragment A and 2 for fragment B; ``tet_twin`` is the other
+    fragment row of the same tet; ``tet_first`` is the tissue tet of a fragment row, the index that
+    the tet-neighbor table uses; ``tet_vertex`` holds the corners before any cut and
+    ``particle_level`` their level values (negative on side A); ``wound_edge`` and ``wound_side``
+    give the mesh edge and the side (0 is A, 1 is B) of a wound particle, -1 for other particles;
+    ``edge_owner`` is the fragment row of each side that holds a cut mesh edge.
+    """
+
+    enabled: int
+    tet_side: wp.array[wp.int32]
+    tet_twin: wp.array[wp.int32]
+    tet_first: wp.array[wp.int32]
+    tet_vertex: wp.array2d[wp.int32]
+    particle_level: wp.array[float]
+    wound_edge: wp.array[wp.int32]
+    wound_side: wp.array[wp.int32]
+    edge_owner: wp.array2d[wp.int32]
+
+
 @wp.func
 def _suture_point_needle(index: int, points: SuturePointData) -> int:
     return index // (points.tunnel_capacity * points.point_capacity)
@@ -655,6 +680,139 @@ def _bary_clamp(b: wp.vec4) -> wp.vec4:
 
 
 @wp.func
+def _fragment_signed_level(tet: int, corner: int, fragments: SutureFragmentData) -> float:
+    """Level value of a corner of a fragment row, with the sign turned so that the side of the row is positive."""
+    level = fragments.particle_level[fragments.tet_vertex[tet, corner]]
+    if fragments.tet_side[tet] == 1:
+        return -level
+    return level
+
+
+@wp.func
+def _fragment_side_weight(tet: int, bary: wp.vec4, fragments: SutureFragmentData) -> float:
+    """Level value at a point of a fragment row, on the row's side, as a share of the level span of the row.
+
+    The value is 0 on the level-zero surface (the cut), positive in the material of the row and
+    negative in the part of the tet shape that holds no material of this row. It is divided by
+    the span of the level values of the four corners, the size of the tet along the blade plane
+    normal, so it has the scale of a barycentric weight (a distance from a face over the size of
+    the tet). It is a fifth weight next to the four barycentric weights: the fragment is the tet
+    clipped at the cut. A tet that is not cut has no cut, so the value is large and never the
+    smallest weight.
+    """
+    if fragments.enabled == 0:
+        return 1.0e30
+    side = fragments.tet_side[tet]
+    if side != 1 and side != 2:
+        return 1.0e30
+    level = float(0.0)
+    lowest = float(1.0e30)
+    highest = float(-1.0e30)
+    for k in range(4):
+        signed = _fragment_signed_level(tet, k, fragments)
+        level += bary[k] * signed
+        lowest = wp.min(lowest, signed)
+        highest = wp.max(highest, signed)
+    if highest <= lowest:
+        return 1.0e30
+    return level / (highest - lowest)
+
+
+@wp.func
+def _material_min(tet: int, bary: wp.vec4, fragments: SutureFragmentData) -> float:
+    """Smallest weight of a point in a tet row; the point is in the material of the row when it is not negative."""
+    return wp.min(_bary_min(bary), _fragment_side_weight(tet, bary, fragments))
+
+
+@wp.func
+def _material_clamp(tet: int, bary: wp.vec4, fragments: SutureFragmentData) -> wp.vec4:
+    """Weights of the nearest point in the material of a tet row: inside the tet shape and on the row's side.
+
+    A point of a fragment row that is past the level-zero surface moves along the straight line
+    toward the middle of the corners of the row's side until it is on that surface.
+    """
+    c = _bary_clamp(bary)
+    if fragments.enabled == 0:
+        return c
+    side = fragments.tet_side[tet]
+    if side != 1 and side != 2:
+        return c
+    level = float(0.0)
+    own = wp.vec4(0.0)
+    own_count = float(0.0)
+    own_level = float(0.0)
+    for k in range(4):
+        signed = _fragment_signed_level(tet, k, fragments)
+        level += c[k] * signed
+        if signed > 0.0:
+            own[k] = 1.0
+            own_count += 1.0
+            own_level += signed
+    if level >= 0.0 or own_count == 0.0:
+        return c
+    own = own / own_count
+    own_level = own_level / own_count
+    return c + (-level / (own_level - level)) * (own - c)
+
+
+@wp.func
+def _walk_neighbor(
+    tet: int,
+    face: int,
+    tip: wp.vec3,
+    tet_indices: wp.array2d[wp.int32],
+    tet_neighbors: wp.array2d[wp.int32],
+    particle_q: wp.array[wp.vec3],
+    fragments: SutureFragmentData,
+) -> int:
+    """The tet row across ``face`` of ``tet`` that holds the material there; negative at a boundary.
+
+    Without the XFEM-type cut this is the entry of the tet-neighbor table. With it, the table holds
+    tissue tets (the first rows) only, so the walk reads it through the tissue tet of its row and
+    then chooses the row of the neighbor:
+
+    - A face of a fragment row without a corner of the row's side is in the part of the tet shape
+      that holds no material of the row. Crossing it leaves the tissue (a boundary).
+    - From a fragment row the walk goes to the fragment of the neighbor on the same side.
+    - From a tet that is not cut (the cut front) the walk goes to the fragment that has a corner
+      of its side on the shared face. When both have one, the side of ``tip`` decides.
+    """
+    if fragments.enabled == 0:
+        return tet_neighbors[tet, face]
+    side = fragments.tet_side[tet]
+    first = tet
+    if side == 1 or side == 2:
+        first = fragments.tet_first[tet]
+        on_face = int(0)
+        for k in range(4):
+            if k != face and _fragment_signed_level(tet, k, fragments) > 0.0:
+                on_face += 1
+        if on_face == 0:
+            return -1
+    neighbor = tet_neighbors[first, face]
+    if neighbor < 0:
+        return neighbor
+    if fragments.tet_side[neighbor] != 1:
+        return neighbor
+    twin = fragments.tet_twin[neighbor]
+    if side == 1:
+        return neighbor
+    if side == 2:
+        return twin
+    side_a_corners = int(0)
+    for k in range(4):
+        if k != face and fragments.particle_level[fragments.tet_vertex[first, k]] < 0.0:
+            side_a_corners += 1
+    if side_a_corners == 3:
+        return neighbor
+    if side_a_corners == 0:
+        return twin
+    if _fragment_side_weight(neighbor, _tet_barycentric(neighbor, tet_indices, particle_q, tip), fragments) >= 0.0:
+        return neighbor
+    return twin
+
+
+@wp.func
 def _segment_distance_sq(x: wp.vec3, a: wp.vec3, b: wp.vec3) -> float:
     u = _closest_parameter(x, a, b)
     return wp.length_sq(x - (a + u * (b - a)))
@@ -830,11 +988,26 @@ def update_suture_needle_state(
     tip_record_key: wp.array[wp.int64],
     overflow: wp.array[wp.int32],
     idle_tet: int,
+    fragments: SutureFragmentData,
 ):
     """One thread per needle: puncture, tet walk, point creation and removal, exit and finish.
 
     ``idle_tet`` is the tet that fills unused vertex-to-tet records of a model with cut capacity
     (-1 otherwise); the entry search skips it.
+
+    With the XFEM-type cut (``fragments.enabled``) a cut tet has two fragment rows with the same
+    tet shape, and a point is in a fragment row only on the row's side of the cut:
+
+    - The entry search and the "inside" test use the smallest of the four barycentric weights and
+      the side weight (:func:`_fragment_side_weight`).
+    - A wound particle has no tet records. When the strongest tip contact record names one at its
+      corner 0, the candidates of the entry search are the fragment rows of the wound particle's
+      side among the tet records of the four corners of the fragment row that owns its mesh edge
+      on that side.
+    - The walk chooses the row across a face with :func:`_walk_neighbor`.
+    - A tip inside the tet shape of a fragment row but past its level-zero surface has left the
+      tissue through the wound face: the exit rules run as at a boundary face, and the exit
+      tunnel point is on the level-zero surface (:func:`_material_clamp`).
     """
     if due[0] == 0:
         return
@@ -870,16 +1043,37 @@ def update_suture_needle_state(
             best_tet = int(-1)
             best_min = float(-1.0e30)
             best_bary = wp.vec4(0.0)
-            for k in range(get_vertex_num_adjacent_tets(adjacency, particle)):
-                tet, _order = get_vertex_adjacent_tet_id_order(adjacency, particle, k)
-                if tet == idle_tet:
-                    continue
-                b = _tet_barycentric(tet, tet_indices, particle_q, tip)
-                m = _bary_min(b)
-                if m > best_min:
-                    best_min = m
-                    best_tet = tet
-                    best_bary = b
+            # The candidates are the tet records of the contact particle. A wound particle has none:
+            # the candidates are then the tet records of the four corners of its owner fragment row,
+            # and of these only the fragment rows of its side, because a wound face is the face of
+            # fragments of one side.
+            owner = int(-1)
+            owner_side = int(0)
+            source_count = int(1)
+            if fragments.enabled != 0:
+                wound_edge = fragments.wound_edge[particle]
+                if wound_edge >= 0:
+                    owner = fragments.edge_owner[wound_edge, fragments.wound_side[particle]]
+                    owner_side = fragments.wound_side[particle] + 1
+                    source_count = 4
+                    if owner < 0 or owner >= tet_indices.shape[0]:
+                        source_count = 0  # no fragment row holds the edge: no candidate, no tunnel
+            for source in range(source_count):
+                vertex = particle
+                if owner >= 0:
+                    vertex = tet_indices[owner, source]
+                for k in range(get_vertex_num_adjacent_tets(adjacency, vertex)):
+                    tet, _order = get_vertex_adjacent_tet_id_order(adjacency, vertex, k)
+                    if tet == idle_tet:
+                        continue
+                    if owner >= 0 and fragments.tet_side[tet] != owner_side:
+                        continue
+                    b = _tet_barycentric(tet, tet_indices, particle_q, tip)
+                    m = _material_min(tet, b, fragments)
+                    if m > best_min:
+                        best_min = m
+                        best_tet = tet
+                        best_bary = b
             if best_tet >= 0:
                 t = tunnel_count[n]
                 tunnel_count[n] = t + 1
@@ -889,7 +1083,7 @@ def update_suture_needle_state(
                 _append_suture_point(
                     slot,
                     best_tet,
-                    _bary_clamp(best_bary),
+                    _material_clamp(best_tet, best_bary, fragments),
                     spacing,
                     _tet_min_attribute(best_tet, tet_indices, row_stiffness),
                     needle_max_points[n],
@@ -909,56 +1103,62 @@ def update_suture_needle_state(
         steps = int(0)
         exited = bool(False)
         deferred = bool(False)
-        inside = _bary_min(bary) >= -_WALK_EPS
+        boundary = bool(False)
+        inside = _material_min(tet, bary, fragments) >= -_WALK_EPS
         if inside:
             needle_entered[n] = 1
         while _bary_min(bary) < -_WALK_EPS and steps < _WALK_MAX_STEPS:
             face = _bary_argmin(bary)
-            neighbor = tet_neighbors[tet, face]
+            neighbor = _walk_neighbor(tet, face, tip, tet_indices, tet_neighbors, particle_q, fragments)
             if neighbor < 0:
-                if needle_entered[n] != 0:
-                    if tunnel_point_count[slot] < 3:
-                        entry_i = slot * Q
-                        x_entry = _barycentric_point(points.tet[entry_i], points.bary[entry_i], tet_indices, particle_q)
-                        if wp.length(tip - x_entry) < spacing:
-                            # Within one spacing of the entry a tip can sit just outside the mesh because the
-                            # pressed surface sprang back over the shallow tip, or because it clipped a bump:
-                            # keep the tunnel open and look again at the next update. A tip that moves farther
-                            # away while outside finishes the tunnel below as a graze.
-                            deferred = True
-                            break
-                    _append_suture_point(
-                        slot,
-                        tet,
-                        _bary_clamp(bary),
-                        spacing,
-                        _tet_min_attribute(tet, tet_indices, row_stiffness),
-                        needle_max_points[n],
-                        points,
-                        tunnel_point_count,
-                        overflow,
-                    )
-                    if tunnel_point_count[slot] < 3:
-                        # A graze: the tip left again before one spacing of travel inside. The tunnel holds no
-                        # row (its points switch off) and is not a stitch; it keeps its contact gate, because
-                        # the shaft may still sit in the hole.
-                        for q in range(tunnel_point_count[slot]):
-                            i_off = slot * Q + q
-                            points.active[i_off] = 0
-                            points.lam[i_off] = wp.vec3(0.0)
-                            points.lam_t[i_off] = 0.0
-                        tunnel_state[slot] = TUNNEL_GRAZE
-                    else:
-                        tunnel_state[slot] = TUNNEL_THROUGH
-                    needle_state[n] = SUTURE_OUTSIDE  # the tunnel is fixed; the tip may open the next one
-                    needle_tunnel[n] = -1
-                    exited = True
+                boundary = True
                 break
             tet = neighbor
             bary = _tet_barycentric(tet, tet_indices, particle_q, tip)
             steps += 1
-            if _bary_min(bary) >= -_WALK_EPS:
+            if _material_min(tet, bary, fragments) >= -_WALK_EPS:
                 needle_entered[n] = 1
+        if not boundary and _bary_min(bary) >= -_WALK_EPS and _fragment_side_weight(tet, bary, fragments) < -_WALK_EPS:
+            # Inside the tet shape of a fragment row but past its level-zero surface: the tip left the
+            # material of the row through the wound face.
+            boundary = True
+        if boundary and needle_entered[n] != 0:
+            if tunnel_point_count[slot] < 3:
+                entry_i = slot * Q
+                x_entry = _barycentric_point(points.tet[entry_i], points.bary[entry_i], tet_indices, particle_q)
+                if wp.length(tip - x_entry) < spacing:
+                    # Within one spacing of the entry a tip can sit just outside the mesh because the
+                    # pressed surface sprang back over the shallow tip, or because it clipped a bump:
+                    # keep the tunnel open and look again at the next update. A tip that moves farther
+                    # away while outside finishes the tunnel below as a graze.
+                    deferred = True
+            if not deferred:
+                _append_suture_point(
+                    slot,
+                    tet,
+                    _material_clamp(tet, bary, fragments),
+                    spacing,
+                    _tet_min_attribute(tet, tet_indices, row_stiffness),
+                    needle_max_points[n],
+                    points,
+                    tunnel_point_count,
+                    overflow,
+                )
+                if tunnel_point_count[slot] < 3:
+                    # A graze: the tip left again before one spacing of travel inside. The tunnel holds no
+                    # row (its points switch off) and is not a stitch; it keeps its contact gate, because
+                    # the shaft may still sit in the hole.
+                    for q in range(tunnel_point_count[slot]):
+                        i_off = slot * Q + q
+                        points.active[i_off] = 0
+                        points.lam[i_off] = wp.vec3(0.0)
+                        points.lam_t[i_off] = 0.0
+                    tunnel_state[slot] = TUNNEL_GRAZE
+                else:
+                    tunnel_state[slot] = TUNNEL_THROUGH
+                needle_state[n] = SUTURE_OUTSIDE  # the tunnel is fixed; the tip may open the next one
+                needle_tunnel[n] = -1
+                exited = True
         if not exited and not deferred:
             if _bary_min(bary) >= -_WALK_EPS or needle_entered[n] != 0:
                 tip_tet[n] = tet
@@ -971,7 +1171,7 @@ def update_suture_needle_state(
                     _append_suture_point(
                         slot,
                         tet,
-                        _bary_clamp(bary),
+                        _material_clamp(tet, bary, fragments),
                         spacing,
                         _tet_min_attribute(tet, tet_indices, row_stiffness),
                         needle_max_points[n],
@@ -1075,3 +1275,37 @@ def update_suture_gate(
         if hit:
             bits |= rod.needle_group[n]
     particle_gate[p] = bits | (particle_gate[p] & keep_mask)
+
+
+@wp.kernel
+def mark_suture_tets(
+    due: wp.array[wp.int32],
+    stamp: wp.array[wp.int32],
+    points: SuturePointData,
+    tunnel_state: wp.array[wp.int32],
+    needle_state: wp.array[wp.int32],
+    tip_tet: wp.array[wp.int32],
+    tet_stamp: wp.array[wp.int32],
+):
+    """One thread per tunnel point: stamp the tets that hold a tunnel, for the XFEM-type cut.
+
+    A tet gets ``stamp[0]`` (the number of the current cut update) when it holds a tunnel point of
+    a tunnel that is growing, through or a graze, or the tip of a growing tunnel. The cut does not
+    cut a tet with the current stamp: a tunnel point stores its tet row and its weights, and no
+    kernel moves it to the fragment row of its side.
+    """
+    i = wp.tid()
+    if due[0] == 0:
+        return
+    Q = points.point_capacity
+    slot = i // Q
+    state = tunnel_state[slot]
+    if state == TUNNEL_PIERCING or state == TUNNEL_THROUGH or state == TUNNEL_GRAZE:
+        tet = points.tet[i]
+        if tet >= 0:
+            tet_stamp[tet] = stamp[0]
+    per_needle = points.tunnel_capacity * Q
+    if i % per_needle == 0:
+        needle = i // per_needle
+        if needle_state[needle] == SUTURE_PIERCING and tip_tet[needle] >= 0:
+            tet_stamp[tip_tet[needle]] = stamp[0]

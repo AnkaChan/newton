@@ -463,9 +463,12 @@ def mark_crossed_tets(
     tet_vertex: wp.array2d[wp.int32],
     tet_mesh_edge: wp.array2d[wp.int32],
     tet_side: wp.array[wp.int32],
+    update_number: wp.array[wp.int32],
+    tet_tunnel_stamp: wp.array[wp.int32],
     tet_pending: wp.array[wp.int32],
     edge_pending: wp.array[wp.int32],
     demand: wp.array[wp.int32],
+    tunnel_blocked: wp.array[wp.int32],
 ):
     """One thread per tissue tet: mark a tet that is not cut yet and has a crossed edge near the blade edge.
 
@@ -473,6 +476,10 @@ def mark_crossed_tets(
     edge. The marked tet is *pending*: :func:`cut_crossed_tets` cuts it when the whole advance
     fits the capacity. The thread marks the crossed edges of its tet and adds one spare tet to
     the demand of the advance.
+
+    A tet that holds a suture tunnel (``tet_tunnel_stamp`` equal to the number of this cut update,
+    written by ``mark_suture_tets``) is not marked: it stays whole, and ``tunnel_blocked`` grows
+    by one.
     """
     tet = wp.tid()
     if due[0] == 0 or advance[0] == 0:
@@ -502,6 +509,9 @@ def mark_crossed_tets(
             if _segment_distance_sq(crossing, a, b) <= pressed_range * pressed_range:
                 pressed = 1
     if pressed == 0:
+        return
+    if tet_tunnel_stamp[tet] == update_number[0]:
+        wp.atomic_add(tunnel_blocked, 0, 1)
         return
     tet_pending[tet] = 1
     wp.atomic_add(demand, demand_slot, 1)
