@@ -1320,6 +1320,23 @@ class Model:
         """Contact gate bits per shape (needle groups), shape [shape_count], int; zero outside needle groups."""
         self.particle_contact_gate: wp.array[wp.int32] | None = None
         """Contact gate bits per particle, shape [particle_count], int; written by the solver near suture tunnels."""
+        self.cut_blade_count: int = 0
+        """Total number of cut blades in the system (experimental)."""
+        self.cut_blade_body: wp.array[wp.int32] | None = None
+        """Body per cut blade, shape [cut_blade_count], int."""
+        self.cut_blade_edge_shape: wp.array[wp.int32] | None = None
+        """Capsule edge shape per cut blade, shape [cut_blade_count], int."""
+        self.cut_blade_direction: wp.array[wp.vec3] | None = None
+        """Cutting direction in the blade body frame, unit, shape [cut_blade_count, 3]."""
+        self.cut_capacity: dict | None = None
+        """Scalars of the pre-allocated cut capacity (see :meth:`ModelBuilder.add_cut_capacity`): ``color_count``,
+        ``copy_colors``, ``spare_count``, ``tri_spare_start``, ``tri_spare_count``, ``edge_spare_start``,
+        ``edge_spare_count``, ``idle_tet``, ``particle_start``, ``particle_end``, ``park_lower``, ``park_upper``.
+        ``None`` when the model has no cut capacity."""
+        self.cut_spare_start: wp.array[wp.int32] | None = None
+        """First spare particle of the pool of each original particle color, shape [color_count], int."""
+        self.cut_row_park_particle: wp.array[wp.int32] | None = None
+        """Parking particle of each spare triangle row, then of each spare edge row, int."""
 
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""

@@ -3782,6 +3782,8 @@ class ViewerBase(ABC):
             visible_paths = {name for name, _, _, _ in groups}
             points = self._apply_layer_transform_to_points(state.particle_q)
             hidden = not self.show_triangles or self._layer_force_hidden()
+            # A cut rewrites triangle rows in place, so the index buffer must follow the model array.
+            mesh_kwargs = {"dynamic": True} if getattr(self.model, "cut_capacity", None) is not None else {}
 
             for name, indices, color, opacity in groups:
                 self.log_mesh(
@@ -3792,6 +3794,7 @@ class ViewerBase(ABC):
                     backface_culling=False,
                     color=color,
                     opacity=opacity,
+                    **mesh_kwargs,
                 )
 
             for name, indices, color, opacity in stale_groups:

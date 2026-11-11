@@ -1558,7 +1558,7 @@ def _make_soft_contact_filter_data(
 ) -> _SoftContactFilterData:
     """Bind existing arrays to an evaluation; allocate no device storage or position snapshots."""
     result = _SoftContactFilterData()
-    if getattr(model, "suture_needle_count", 0) > 0:
+    if getattr(model, "suture_needle_count", 0) > 0 or getattr(model, "cut_blade_count", 0) > 0:
         # The gate reads the record's corners and shape even for analytic rows.
         result.contact_count = contacts.soft_contact_count
         result.contact_max = contacts.soft_contact_max

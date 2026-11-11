@@ -13,8 +13,8 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...exceptions import NewtonDeprecationWarning
-from ...geometry import GeoType, ParticleFlags
+from ...exceptions import NewtonDeprecationWarning, NewtonWarning
+from ...geometry import GeoType, ParticleFlags, ShapeFlags
 from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
@@ -35,7 +35,7 @@ from ...sim import (
 from ...sim.collide import _count_soft_particle_rigid_contact_pairs
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
-from ...utils.mesh import build_vertex_adjacency_with_warp
+from ...utils.mesh import MeshAdjacencyData, build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from ..tendon_kernels import solve_tendon_material, update_tendon_attachments
@@ -43,6 +43,23 @@ from ..tendon_state import TendonStateMixin
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
 from . import particle_vbd_kernels, rigid_vbd_kernels, vbd_coupling_kernels
+from .cut_kernels import (
+    CUT_GATE_BIT,
+    accumulate_cut_blade_force,
+    apply_start_gap_offset,
+    begin_cut_update,
+    build_cut_row_sources,
+    build_padded_tet_adjacency,
+    clear_cut_gate_bit,
+    compute_start_gap_offset,
+    decide_cut_advance,
+    mark_cut_faces,
+    mark_pressed_vertices,
+    refresh_edge_rows,
+    refresh_triangle_rows,
+    split_cut_vertices,
+    take_surface_rows,
+)
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -148,6 +165,10 @@ _SUTURE_PARTICLE_ATTRIBUTES = (
     ("suture_puncture_cos", 0.5),
     ("suture_stiffness", float("inf")),
 )
+
+# Per-particle tissue parameter of the cutting feature: the blade force [N] that cuts the tissue at this
+# particle. Infinite (the default) marks tissue that cannot be cut.
+_CUT_PARTICLE_ATTRIBUTES = (("cut_force", float("inf")),)
 
 # The six edges of a tet as local vertex pairs, for the mean edge length of the spacing rule.
 _TET_EDGE_PAIRS = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
@@ -526,6 +547,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         suture_closest_search_window: int = 1,  # Rod segments searched on each side of the cached segment per refresh
         suture_friction_transverse_weight: float = 0.0,  # Weight of the transverse multiplier in the friction cap (1 = contact law)
         suture_smooth_tangent: bool = False,  # Continuous rod tangent for the rows (bisector at joints) instead of the segment direction
+        # Cutting (experimental): cut blades authored with ModelBuilder.add_cut_blade and add_cut_capacity
+        cut_armed: bool = False,  # True: the first blade edge contact with force cuts; False: force test
+        cut_update_interval: int = 1,  # Substeps between two cut updates
+        cut_start_gap: float
+        | None = None,  # Distance between the two wound faces right after a split [m]; None = self-contact margin
+        cut_contact_range: str | float = "detection",  # "detection", "force" or a value [m]
+        cut_keep_side_labels: bool = True,  # Keep the side label of a tet for the stroke
+        cut_gap_direction: str = "largest_least_opening",  # or "normal_sum"
+        cut_mass_rule: str = "rest_volume",  # or "full_copy"
+        cut_surface_edges: bool = True,  # Wound faces get edge rows
+        cut_press_wound: bool = False,  # Fork: wound particles inside the blade span count as pressed
+        cut_gate_wound: bool = False,  # Fork: the blade has no contact with split vertices and copies
         deterministic: wp.DeterministicMode | None = None,
         enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
@@ -821,6 +854,39 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 the rod curve (the bisector of the two capsules at a joint, interpolated along a capsule), so
                 the transverse plane of its row does not jump when the closest place crosses a kinked joint.
                 ``False`` (default) uses the direction of the closest capsule.
+            cut_armed: ``True`` cuts at the first contact of a blade edge that carries force; ``False``
+                (default) cuts when the blade force reaches ``vbd.cut_force``.
+
+                .. experimental::
+
+                    Cutting (all ``cut_*`` arguments, :meth:`~newton.ModelBuilder.add_cut_blade` and
+                    :meth:`~newton.ModelBuilder.add_cut_capacity`) is experimental and can change
+                    without a deprecation period. See the *Cutting* section of the solver page.
+            cut_update_interval: Substeps between two cut updates (blade force test, cut faces, split).
+            cut_start_gap: Distance between the two wound faces right after a split [m]. ``None`` uses
+                the self-contact margin. Each new particle moves half of it into its own material.
+            cut_contact_range: Distance from the blade edge axis within which a tissue vertex counts as
+                pressed. ``"detection"`` (default) is the edge radius plus the shape margin, the particle
+                radius and the pipeline's ``soft_contact_gap``; ``"force"`` leaves out the gap; a number
+                is the distance itself [m].
+            cut_keep_side_labels: ``True`` (default) keeps the side of the blade plane that a tet was
+                labeled with until the blade edge has no contact record; ``False`` computes the side
+                again at every cut update.
+            cut_gap_direction: Direction of the start gap. ``"largest_least_opening"`` (default) makes
+                the smallest opening over the cut faces of a particle as large as possible;
+                ``"normal_sum"`` uses the area-weighted sum of their normals.
+            cut_mass_rule: ``"rest_volume"`` (default) shares the mass of a split vertex between the
+                original and its copies by the rest volume of their tets; ``"full_copy"`` gives every
+                copy the full mass.
+            cut_surface_edges: ``True`` (default) gives the wound faces edge rows, so they take part in
+                edge-edge self contact; ``False`` leaves vertex-triangle contact only.
+            cut_press_wound: ``True`` also counts the wound particles under the blade edge as pressed,
+                so every cut update with enough blade force cuts the next tet row from the cut front.
+                A fork of the design (the blade rests on the two wound lips); default ``False``.
+            cut_gate_wound: ``True`` switches off the contact between the blade body and the split
+                vertices and their copies, through the contact gate of the suture feature, so the blade
+                edge goes down to the cut front and the cut follows it. A fork of the design; default
+                ``False``.
 
             collision_pipeline: Optional :class:`~newton.CollisionPipeline`
                 owned by this solver. When given, the solver allocates its own
@@ -1215,6 +1281,30 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         # Initialize rigid penetration-free (DAT) truncation state
         self._init_rigid_penetration_free(model, rigid_soft_dat_use_interval_arithmetic)
+
+        # Initialize cutting state (shared tet-neighbor table, padded vertex-to-tet table, row sources)
+        self._init_cut_system(
+            model,
+            _sc_margin,
+            _sc_gap,
+            effective_deterministic,
+            particle_enable_self_contact,
+            particle_topological_contact_filter_threshold,
+            particle_rest_shape_contact_exclusion_radius,
+            particle_edge_parallel_epsilon,
+            particle_external_vertex_contact_filtering_map,
+            particle_external_edge_contact_filtering_map,
+            cut_armed,
+            cut_update_interval,
+            cut_start_gap,
+            cut_contact_range,
+            cut_keep_side_labels,
+            cut_gap_direction,
+            cut_mass_rule,
+            cut_surface_edges,
+            cut_press_wound,
+            cut_gate_wound,
+        )
 
         # Initialize suturing state (tunnel points, needle state machine, contact gate)
         self._init_suture_system(
@@ -2618,6 +2708,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             puncture force [N], cosine of the puncture angle, tunnel row stiffness [N/m]); defaults
             1.0, 0.3, 0.5, 0.5 and infinity (a hard row). A tunnel point takes the smallest
             stiffness of its tet's four vertices.
+          - ``vbd:cut_force`` per particle for the cutting feature: the blade force [N] along the
+            cutting direction that cuts the tissue at this particle; default infinity (a value at or
+            above 1e30 marks tissue that cannot be cut).
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes. The Dahl and ``joint_is_hard`` attributes are authored in USD as
@@ -2685,7 +2778,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 namespace="vbd",
             )
         )
-        for name, default in _SUTURE_PARTICLE_ATTRIBUTES:
+        for name, default in (*_SUTURE_PARTICLE_ATTRIBUTES, *_CUT_PARTICLE_ATTRIBUTES):
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
                     name=name,
@@ -3141,6 +3234,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._update_suture_needles(state_in, contacts)
         self._finalize_particles(state_out, dt)
         self._save_tendon_history(state_out)
+        if self._cut_blade_count > 0:
+            self._update_cut_blades(state_out, contacts)
 
     @override
     def reset(
@@ -3274,6 +3369,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         f"expected solver device {self.device}."
                     )
                 particle_qd = state.particle_qd
+            # A cut edits model arrays (tet corners, masses, surface rows). A particle position reset
+            # undoes every cut first, for the whole model only.
+            if self._cut_has_capacity and particle_q is not None:
+                if world_mask is not None:
+                    raise NotImplementedError("A model with cut capacity can be reset for the whole model only")
+                self._reset_cut_system()
             if particle_q is not None or particle_qd is not None:
                 wp.launch(
                     kernel=reset_particle_state,
@@ -3444,6 +3545,688 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             model.body_count, rigid_soft_max_displacement, dtype=float, device=self.device
         )
 
+    def _init_cut_system(
+        self,
+        model: Model,
+        margin: float,
+        gap: float,
+        deterministic,
+        enable_self_contact: bool,
+        filter_threshold: int,
+        exclusion_radius: float,
+        edge_parallel_epsilon: float,
+        external_vertex_filter_map: dict | None,
+        external_edge_filter_map: dict | None,
+        armed: bool,
+        update_interval: int,
+        start_gap: float | None,
+        contact_range: str | float,
+        keep_side_labels: bool,
+        gap_direction: str,
+        mass_rule: str,
+        surface_edges: bool,
+        press_wound: bool,
+        gate_wound: bool,
+    ) -> None:
+        """Check the settings a cuttable model needs and allocate every array of the cut once.
+
+        Builds the tet-neighbor table that the cut shares with the suture, the solver-owned
+        vertex-to-tet table with room for copies, and the tet sources of the skin rows.
+        """
+        self._tet_neighbors = None
+        self._cut_blade_count = int(getattr(model, "cut_blade_count", 0) or 0)
+        capacity = getattr(model, "cut_capacity", None)
+        self._cut_has_capacity = capacity is not None
+        self._cut_idle_tet = int(capacity["idle_tet"]) if capacity is not None else -1
+        if self._cut_blade_count > 0 and capacity is None:
+            raise ValueError("A model with a cut blade needs cut capacity; call ModelBuilder.add_cut_capacity()")
+        if capacity is None:
+            return
+
+        # ---- rules of a model with cut capacity ----
+        if model.particle_world_start is not None and model.world_count > 1:
+            raise NotImplementedError("Cutting supports a single world for now")
+        if not _is_tet_only_elasticity_model(model):
+            raise ValueError("A model with cut capacity must have no triangle or edge stiffness")
+        if deterministic != wp.DeterministicMode.NOT_GUARANTEED:
+            raise ValueError(
+                "Cutting takes spare particles through atomic counters; a Warp deterministic mode is not supported"
+            )
+        vbd_attrs = getattr(model, "vbd", None)
+        if vbd_attrs is None or not hasattr(vbd_attrs, "cut_force"):
+            raise ValueError(
+                "Cutting needs the SolverVBD custom attributes; call "
+                "SolverVBD.register_custom_attributes(builder) before adding particles"
+            )
+        if not enable_self_contact:
+            raise ValueError("A model with cut capacity needs particle_enable_self_contact=True")
+        if filter_threshold > 1:
+            raise ValueError("A model with cut capacity needs particle_topological_contact_filter_threshold <= 1")
+        if exclusion_radius != 0.0:
+            raise ValueError("A model with cut capacity needs particle_rest_shape_contact_exclusion_radius == 0")
+        if external_vertex_filter_map is not None or external_edge_filter_map is not None:
+            raise ValueError("A model with cut capacity does not support external contact filter maps")
+        if update_interval < 1:
+            raise ValueError("cut_update_interval must be at least 1")
+        if gap_direction not in ("largest_least_opening", "normal_sum"):
+            raise ValueError(f"Unknown cut_gap_direction {gap_direction!r}")
+        if mass_rule not in ("rest_volume", "full_copy"):
+            raise ValueError(f"Unknown cut_mass_rule {mass_rule!r}")
+
+        device = self.device
+        particle_count = model.particle_count
+        color_count = int(capacity["color_count"])
+        spare_count = int(capacity["spare_count"])
+        cut_force = vbd_attrs.cut_force.numpy()
+        cuttable = np.isfinite(cut_force) & (cut_force < 1.0e30)
+        rest_q = model.particle_q.numpy()
+        radius = model.particle_radius.numpy()
+        flags = model.particle_flags.numpy()
+        parked = np.arange(int(capacity["particle_start"]), int(capacity["particle_end"]))
+        spare_start = model.cut_spare_start.numpy()
+        spare_particles = np.concatenate([np.arange(start, start + spare_count) for start in spare_start])
+        query = float(margin) + float(gap)
+        is_parked = np.zeros(particle_count, dtype=bool)
+        is_parked[parked] = True
+        cuttable = cuttable & ~is_parked  # a scene may fill vbd.cut_force for every particle
+        if int(getattr(model, "suture_needle_count", 0) or 0) > 30:
+            raise ValueError("A model with cut capacity supports at most 30 suture needles (one gate bit is the cut's)")
+        if model.spring_count > 0 and cuttable[model.spring_indices.numpy().reshape(-1)].any():
+            raise ValueError("A cuttable particle must not be the end of a spring")
+        # The copy color layout as add_cut_capacity() made it.
+        copy_colors = bool(capacity["copy_colors"])
+        particle_colors = model.particle_colors.numpy()
+        if len(model.particle_color_groups) != (2 if copy_colors else 1) * color_count:
+            raise ValueError("The particle color groups were changed after add_cut_capacity()")
+        for color, start in enumerate(spare_start):
+            expected = color_count + color if copy_colors else color
+            if (particle_colors[start : start + spare_count] != expected).any():
+                raise ValueError("The particle color groups were changed after add_cut_capacity()")
+        if len(parked) > 1:
+            parked_q = rest_q[parked]
+            closest = np.inf
+            for start in range(0, len(parked), 1024):
+                d = np.linalg.norm(parked_q[start : start + 1024, None, :] - parked_q[None, :, :], axis=2)
+                rows = np.arange(d.shape[0])
+                d[rows, start + rows] = np.inf
+                closest = min(closest, float(d.min()))
+            if closest <= query:
+                raise ValueError(
+                    f"Parking particles are {closest * 1e3:.2f} mm apart; the spacing must exceed the "
+                    f"self-contact margin plus gap ({query * 1e3:.2f} mm)"
+                )
+        active = np.flatnonzero((flags & int(ParticleFlags.ACTIVE)) != 0)
+        if len(active) > 0 and len(parked) > 0:
+            lower = rest_q[parked].min(axis=0) - query
+            upper = rest_q[parked].max(axis=0) + query
+            near = active[np.all((rest_q[active] >= lower) & (rest_q[active] <= upper), axis=1)]
+            if len(near) > 0:
+                raise ValueError("An active particle starts inside the parking lattice of the cut capacity")
+        if not np.allclose(radius[parked], radius[parked][0]) or (
+            cuttable.any() and not np.allclose(radius[cuttable], radius[parked][0])
+        ):
+            raise ValueError("Spare and parking particles must have the radius of every cuttable particle")
+        # At the start no shape that collides with particles is within its rigid-soft detection distance
+        # of a parked particle: edge and face contact records also see inactive particles.
+        if model.shape_count > 0 and len(parked) > 0:
+            soft_gap = float(getattr(self.collision_pipeline, "soft_contact_gap", 0.0) or 0.0)
+            shape_flags = model.shape_flags.numpy()
+            shape_type = model.shape_type.numpy()
+            shape_scale = model.shape_scale.numpy()
+            shape_xform = model.shape_transform.numpy()
+            shape_body = model.shape_body.numpy()
+            shape_bound = model.shape_collision_radius.numpy()
+            margins = (
+                model.shape_margin.numpy()
+                if model.shape_margin is not None and model.shape_margin.shape[0] > 0
+                else np.zeros(model.shape_count, dtype=np.float32)
+            )
+            body_q = model.body_q.numpy() if model.body_count > 0 else None
+            parked_q = rest_q[parked].astype(np.float64)
+            for shape in np.flatnonzero((shape_flags & int(ShapeFlags.COLLIDE_PARTICLES)) != 0):
+                xform = wp.transform(*shape_xform[shape])
+                if shape_body[shape] >= 0:
+                    xform = wp.transform_multiply(wp.transform(*body_q[shape_body[shape]]), xform)
+                rotation = np.array(wp.quat_to_matrix(wp.transform_get_rotation(xform)), dtype=np.float64).reshape(3, 3)
+                local = (parked_q - np.array(wp.transform_get_translation(xform), dtype=np.float64)) @ rotation
+                scale = shape_scale[shape].astype(np.float64)
+                kind = int(shape_type[shape])
+                if kind == int(GeoType.BOX):
+                    outside = np.abs(local) - scale
+                    distance = np.linalg.norm(np.maximum(outside, 0.0), axis=1) + np.minimum(outside.max(axis=1), 0.0)
+                elif kind == int(GeoType.CAPSULE):
+                    axis_point = np.zeros_like(local)
+                    axis_point[:, 2] = np.clip(local[:, 2], -scale[1], scale[1])
+                    distance = np.linalg.norm(local - axis_point, axis=1) - scale[0]
+                elif kind == int(GeoType.SPHERE):
+                    distance = np.linalg.norm(local, axis=1) - scale[0]
+                elif kind == int(GeoType.PLANE):
+                    distance = local[:, 2]
+                else:
+                    distance = np.linalg.norm(local, axis=1) - float(shape_bound[shape])  # bounding sphere
+                reach = float(radius[parked].max()) + float(margins[shape]) + soft_gap
+                if float(distance.min()) <= reach:
+                    raise ValueError(
+                        f"Shape {int(shape)} starts within its contact detection distance of the parking lattice of "
+                        "the cut capacity; move the lattice (park_position) away from every shape"
+                    )
+
+        tet_indices = model.tet_indices.numpy().reshape(-1, 4)
+        cuttable_tets = cuttable[tet_indices].all(axis=1)
+        self._cut_start_gap = float(margin if start_gap is None else start_gap)
+        if cuttable_tets.any():
+            x = rest_q[tet_indices[cuttable_tets]]
+            edges = np.concatenate([np.linalg.norm(x[:, a] - x[:, b], axis=1) for a, b in _TET_EDGE_PAIRS])
+            if edge_parallel_epsilon >= float(edges.min()) ** 2:
+                warnings.warn(
+                    f"particle_edge_parallel_epsilon ({edge_parallel_epsilon:g}) is not below the squared shortest "
+                    f"edge of a cuttable tet ({float(edges.min()) ** 2:g} m^2): such edges act as points in "
+                    "edge-edge self contact",
+                    NewtonWarning,
+                    stacklevel=3,
+                )
+            volume = (
+                np.abs(np.einsum("ij,ij->i", np.cross(x[:, 1] - x[:, 0], x[:, 2] - x[:, 0]), x[:, 3] - x[:, 0])) / 6.0
+            )
+            areas = [
+                0.5 * np.linalg.norm(np.cross(x[:, b] - x[:, a], x[:, c] - x[:, a]), axis=1)
+                for a, b, c in ((1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1))
+            ]
+            height = float((3.0 * volume / np.maximum(np.max(areas, axis=0), 1.0e-30)).min())
+            if self._cut_start_gap > height:
+                warnings.warn(
+                    f"cut_start_gap ({self._cut_start_gap * 1e3:.2f} mm) is larger than the smallest height of a "
+                    f"cuttable tet ({height * 1e3:.2f} mm): a tet at the wound can start inverted",
+                    NewtonWarning,
+                    stacklevel=3,
+                )
+
+        # ---- rules of a model with a blade ----
+        blade_count = self._cut_blade_count
+        if blade_count > 1:
+            raise NotImplementedError("Cutting supports one cut blade for now")
+        if blade_count > 0:
+            if self.collision_pipeline is None or not getattr(
+                self.collision_pipeline, "enable_rigid_soft_full_surface_contact", False
+            ):
+                raise ValueError(
+                    "A cut blade needs a solver-owned CollisionPipeline with enable_rigid_soft_full_surface_contact=True"
+                )
+            if not self.rigid_soft_enable_dat:
+                raise ValueError("A cut blade needs rigid_soft_enable_dat=True")
+            if getattr(self.collision_pipeline, "_soft_mesh_contact_data", None) is not None:
+                raise NotImplementedError(
+                    "A model with a cut blade supports box and capsule shapes in contact with particles; "
+                    "mesh shapes read surface adjacency that a cut does not update"
+                )
+            blade_body = model.cut_blade_body.numpy()
+            if (model.body_inv_mass.numpy()[blade_body] <= 0.0).any() or (
+                (model.body_flags.numpy()[blade_body] & int(BodyFlags.KINEMATIC)) != 0
+            ).any():
+                raise ValueError("The body of a cut blade must be dynamic")
+            if not cuttable.any():
+                warnings.warn(
+                    "The model has a cut blade but no particle with a finite vbd.cut_force at solver construction; "
+                    "fill vbd.cut_force before creating SolverVBD",
+                    NewtonWarning,
+                    stacklevel=3,
+                )
+
+        # ---- shared tet-neighbor table ----
+        self._tet_neighbors = wp.array(build_tet_neighbors(tet_indices).reshape(-1, 4), dtype=wp.int32, device=device)
+        tet_count = tet_indices.shape[0]
+
+        # ---- solver-owned vertex-to-tet table with room for copies ----
+        shared = model.soft_mesh_adjacency_device
+        pairs, offsets, max_tets = build_padded_tet_adjacency(
+            shared.v_adj_tets.numpy(), shared.v_adj_tets_offsets.numpy(), spare_particles, self._cut_idle_tet
+        )
+        adjacency = MeshAdjacencyData()
+        adjacency.edge_tri_indices = shared.edge_tri_indices
+        adjacency.tri_edge_indices = shared.tri_edge_indices
+        adjacency.v_adj_tris = shared.v_adj_tris
+        adjacency.v_adj_tris_offsets = shared.v_adj_tris_offsets
+        adjacency.v_adj_edges = shared.v_adj_edges
+        adjacency.v_adj_edges_offsets = shared.v_adj_edges_offsets
+        adjacency.v_adj_springs = shared.v_adj_springs
+        adjacency.v_adj_springs_offsets = shared.v_adj_springs_offsets
+        adjacency.v_adj_tets = wp.array(pairs, dtype=wp.int32, device=device)
+        adjacency.v_adj_tets_offsets = wp.array(offsets, dtype=wp.int32, device=device)
+        self.particle_adjacency = adjacency
+        self._cut_max_tets_per_vertex = max_tets
+
+        # ---- settings ----
+        self.cut_armed = bool(armed)
+        self.cut_update_interval = int(update_interval)
+        self.cut_keep_side_labels = bool(keep_side_labels)
+        self.cut_gap_direction = gap_direction
+        self.cut_mass_rule = mass_rule
+        self.cut_surface_edges = bool(surface_edges)
+        self.cut_press_wound = bool(press_wound)
+        self.cut_gate_wound = bool(gate_wound)
+
+        # ---- blade force (chapter 2) ----
+        self._cut_substep = wp.zeros(1, dtype=wp.int32, device=device)
+        self._cut_due = wp.zeros(1, dtype=wp.int32, device=device)
+        self._cut_update_number = wp.zeros(1, dtype=wp.int32, device=device)
+        blades = max(blade_count, 1)
+        self._cut_blade_force = wp.zeros(blades, dtype=float, device=device)
+        self._cut_blade_record_key = wp.zeros(blades, dtype=wp.int64, device=device)
+        self._cut_contact_count = wp.zeros(blades, dtype=wp.int32, device=device)
+        self._cut_advance = wp.zeros(blades, dtype=wp.int32, device=device)
+        shape_blade = np.full(model.shape_count, -1, dtype=np.int32)
+        ranges = np.zeros(blades, dtype=np.float32)
+        if blade_count > 0:
+            edge_shapes = model.cut_blade_edge_shape.numpy()
+            shape_scale = model.shape_scale.numpy()
+            shape_margin = (
+                model.shape_margin.numpy()
+                if model.shape_margin is not None and model.shape_margin.shape[0] > 0
+                else np.zeros(model.shape_count, dtype=np.float32)
+            )
+            soft_gap = float(getattr(self.collision_pipeline, "soft_contact_gap", 0.0) or 0.0)
+            particle_radius = float(radius[cuttable].max()) if cuttable.any() else float(radius[parked].max())
+            for blade in range(blade_count):
+                shape = int(edge_shapes[blade])
+                shape_blade[shape] = blade
+                force_range = float(shape_scale[shape][0]) + float(shape_margin[shape]) + particle_radius
+                if contact_range == "detection":
+                    ranges[blade] = force_range + soft_gap
+                elif contact_range == "force":
+                    ranges[blade] = force_range
+                elif isinstance(contact_range, (int, float)) and contact_range > 0.0:
+                    ranges[blade] = float(contact_range)
+                else:
+                    raise ValueError(
+                        f"cut_contact_range must be 'detection', 'force' or a positive value, got {contact_range!r}"
+                    )
+            # Fork: with cut_gate_wound the blade has no contact with split vertices and copies (the wound
+            # lips). The bit is written for both switch values, so a second solver on the same model sees its own.
+            shape_gate = model.shape_contact_gate.numpy()
+            shape_body = model.shape_body.numpy()
+            for body in model.cut_blade_body.numpy():
+                if self.cut_gate_wound:
+                    shape_gate[shape_body == body] |= np.int32(CUT_GATE_BIT)
+                else:
+                    shape_gate[shape_body == body] &= np.int32(~CUT_GATE_BIT)
+            model.shape_contact_gate.assign(shape_gate)
+        self._cut_shape_blade = wp.array(shape_blade, dtype=wp.int32, device=device)
+        self._cut_contact_range = wp.array(ranges, dtype=wp.float32, device=device)
+
+        # ---- cut faces (chapter 3) ----
+        self._cut_particle_pressed = wp.zeros(particle_count, dtype=wp.int32, device=device)
+        self._cut_particle_wound = wp.zeros(particle_count, dtype=wp.int32, device=device)
+        self._cut_tet_side = wp.zeros(tet_count, dtype=wp.int32, device=device)
+        self._cut_face_side = wp.zeros((tet_count, 4), dtype=wp.int32, device=device)
+        self._cut_face_stamp = wp.full((tet_count, 4), -1, dtype=wp.int32, device=device)
+        self._cut_particle_dirty = wp.zeros(particle_count, dtype=wp.int32, device=device)
+
+        # ---- split and start gap (chapter 4) ----
+        self._cut_tet_record_group = wp.full(max(len(pairs) // 2, 1), -1, dtype=wp.int32, device=device)
+        self._cut_pool_taken = wp.zeros(color_count, dtype=wp.int32, device=device)
+        self._cut_overflow = wp.zeros(color_count + 2, dtype=wp.int32, device=device)
+        self._cut_unsafe = wp.zeros(1, dtype=wp.int32, device=device)
+        attached = np.zeros(particle_count, dtype=np.int32)
+        if model.attachment_particle_body_count > 0:
+            attached[model.attachment_particle_body_particle.numpy()] = 1
+        self._cut_particle_attached = wp.array(attached, dtype=wp.int32, device=device)
+        self._cut_particle_new = wp.zeros(particle_count, dtype=wp.int32, device=device)
+        self._cut_offset = wp.zeros(particle_count, dtype=wp.vec3, device=device)
+
+        # ---- surface rows (chapter 5) ----
+        tri_indices = (
+            model.tri_indices.numpy().reshape(-1, 3) if model.tri_count > 0 else np.zeros((0, 3), dtype=np.int32)
+        )
+        edge_indices = (
+            model.edge_indices.numpy().reshape(-1, 4) if model.edge_count > 0 else np.zeros((0, 4), dtype=np.int32)
+        )
+        tri_source, edge_source, tet_face_row, tet_edge_row = build_cut_row_sources(
+            tet_indices, self._tet_neighbors.numpy(), tri_indices, edge_indices
+        )
+        self._cut_tri_source = wp.array(tri_source, dtype=wp.int32, device=device)
+        self._cut_edge_source = wp.array(edge_source, dtype=wp.int32, device=device)
+        self._cut_tet_face_row = wp.array(tet_face_row, dtype=wp.int32, device=device)
+        self._cut_tet_edge_row = wp.array(tet_edge_row, dtype=wp.int32, device=device)
+        self._cut_tri_taken = wp.zeros(1, dtype=wp.int32, device=device)
+        self._cut_edge_taken = wp.zeros(1, dtype=wp.int32, device=device)
+        self._cut_empty_indices = wp.zeros(1, dtype=wp.vec3i, device=device)
+        self._cut_empty_vec3 = wp.zeros(1, dtype=wp.vec3, device=device)
+
+        # ---- arrays that a full particle reset restores ----
+        self._cut_saved = {
+            "tet_indices": wp.clone(model.tet_indices),
+            "v_adj_tets": wp.clone(adjacency.v_adj_tets),
+            "particle_mass": wp.clone(model.particle_mass),
+            "particle_inv_mass": wp.clone(model.particle_inv_mass),
+            "particle_flags": wp.clone(model.particle_flags),
+            "particle_q": wp.clone(model.particle_q),
+            "tri_indices": wp.clone(model.tri_indices),
+            "edge_indices": wp.clone(model.edge_indices),
+            "tet_neighbors": wp.clone(self._tet_neighbors),
+            "tri_source": wp.clone(self._cut_tri_source),
+            "edge_source": wp.clone(self._cut_edge_source),
+            "tet_face_row": wp.clone(self._cut_tet_face_row),
+            "tet_edge_row": wp.clone(self._cut_tet_edge_row),
+        }
+
+    def _reset_cut_system(self) -> None:
+        """Undo every cut: restore the arrays saved at construction and clear the cut state."""
+        model = self.model
+        saved = self._cut_saved
+        wp.copy(model.tet_indices, saved["tet_indices"])
+        wp.copy(self.particle_adjacency.v_adj_tets, saved["v_adj_tets"])
+        wp.copy(model.particle_mass, saved["particle_mass"])
+        wp.copy(model.particle_inv_mass, saved["particle_inv_mass"])
+        wp.copy(model.particle_flags, saved["particle_flags"])
+        wp.copy(model.particle_q, saved["particle_q"])
+        wp.copy(model.tri_indices, saved["tri_indices"])
+        wp.copy(model.edge_indices, saved["edge_indices"])
+        wp.copy(self._tet_neighbors, saved["tet_neighbors"])
+        wp.copy(self._cut_tri_source, saved["tri_source"])
+        wp.copy(self._cut_edge_source, saved["edge_source"])
+        wp.copy(self._cut_tet_face_row, saved["tet_face_row"])
+        wp.copy(self._cut_tet_edge_row, saved["tet_edge_row"])
+        self._cut_face_stamp.fill_(-1)
+        for array in (
+            self._cut_substep,
+            self._cut_due,
+            self._cut_update_number,
+            self._cut_blade_force,
+            self._cut_contact_count,
+            self._cut_advance,
+            self._cut_particle_pressed,
+            self._cut_particle_wound,
+            self._cut_tet_side,
+            self._cut_face_side,
+            self._cut_particle_dirty,
+            self._cut_pool_taken,
+            self._cut_overflow,
+            self._cut_unsafe,
+            self._cut_particle_new,
+            self._cut_tri_taken,
+            self._cut_edge_taken,
+        ):
+            array.zero_()
+        self._cut_blade_record_key.zero_()
+        wp.launch(
+            kernel=clear_cut_gate_bit,
+            dim=model.particle_count,
+            inputs=[CUT_GATE_BIT],
+            outputs=[model.particle_contact_gate],
+            device=self.device,
+        )
+
+    def _update_cut_blades(self, state: State, contacts: Contacts | None) -> None:
+        """Last call of a substep: blade force, cut faces, vertex split, start gap and surface rows.
+
+        Kernels only, with fixed launch sizes and no readback, so a captured graph can replay it.
+        """
+        model = self.model
+        device = self.device
+        tet_count = model.tet_count
+        tets = model.tet_indices.reshape((tet_count, 4))
+        capacity = model.cut_capacity
+        vbd_attrs = model.vbd
+        due = self._cut_due
+        blade = [model.cut_blade_body, model.cut_blade_edge_shape, model.cut_blade_direction]
+        wp.launch(
+            kernel=begin_cut_update,
+            dim=1,
+            inputs=[
+                self.cut_update_interval,
+                self._cut_substep,
+                due,
+                self._cut_update_number,
+                self._cut_blade_force,
+                self._cut_blade_record_key,
+                self._cut_contact_count,
+            ],
+            device=device,
+        )
+        if contacts is not None and contacts.soft_contact_max > 0:
+            wp.launch(
+                kernel=accumulate_cut_blade_force,
+                dim=contacts.soft_contact_max,
+                inputs=[
+                    due,
+                    self._cut_shape_blade,
+                    model.cut_blade_body,
+                    model.cut_blade_direction,
+                    _make_soft_contact_filter_data(model, contacts, state.particle_q, state.body_q),
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_max,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    model.shape_body,
+                    model.shape_margin,
+                    state.body_q,
+                    state.particle_q,
+                    model.particle_radius,
+                    vbd_attrs.cut_force,
+                    self.body_particle_contact_penalty_k,
+                    self.rigid_soft_contact_use_log_barrier,
+                ],
+                outputs=[self._cut_blade_force, self._cut_blade_record_key, self._cut_contact_count],
+                device=device,
+            )
+        wp.launch(
+            kernel=decide_cut_advance,
+            dim=self._cut_blade_count,
+            inputs=[
+                due,
+                1 if self.cut_armed else 0,
+                contacts.soft_contact_indices if contacts is not None else self._cut_empty_indices,
+                contacts.soft_contact_barycentric if contacts is not None else self._cut_empty_vec3,
+                vbd_attrs.cut_force,
+                self._cut_blade_force,
+                self._cut_blade_record_key,
+            ],
+            outputs=[self._cut_advance],
+            device=device,
+        )
+        wp.launch(
+            kernel=mark_pressed_vertices,
+            dim=model.particle_count,
+            inputs=[
+                due,
+                1 if self.cut_press_wound else 0,
+                *blade,
+                self._cut_contact_range,
+                self._cut_contact_count,
+                state.body_q,
+                model.shape_transform,
+                model.shape_scale,
+                state.particle_q,
+                model.particle_flags,
+                vbd_attrs.cut_force,
+                self._cut_particle_wound,
+            ],
+            outputs=[self._cut_particle_pressed],
+            device=device,
+        )
+        wp.launch(
+            kernel=mark_cut_faces,
+            dim=4 * tet_count,
+            inputs=[
+                due,
+                1 if self.cut_keep_side_labels else 0,
+                *blade,
+                self._cut_contact_count,
+                self._cut_advance,
+                self._cut_update_number,
+                state.body_q,
+                model.shape_transform,
+                model.shape_scale,
+                state.particle_q,
+                vbd_attrs.cut_force,
+                tets,
+                self._cut_particle_pressed,
+            ],
+            outputs=[
+                self._tet_neighbors,
+                self._cut_tet_side,
+                self._cut_face_side,
+                self._cut_face_stamp,
+                self._cut_particle_dirty,
+                self._cut_particle_wound,
+            ],
+            device=device,
+        )
+        wp.launch(
+            kernel=split_cut_vertices,
+            dim=model.particle_count,
+            inputs=[
+                due,
+                self._cut_idle_tet,
+                int(capacity["color_count"]),
+                int(capacity["spare_count"]),
+                1 if self.cut_mass_rule == "full_copy" else 0,
+                CUT_GATE_BIT,
+                model.cut_spare_start,
+                model.particle_colors,
+                self._cut_particle_attached,
+                self._tet_neighbors,
+                self._cut_face_side,
+                model.tet_poses,
+                self.particle_adjacency,
+                self._cut_tet_record_group,
+            ],
+            outputs=[
+                tets,
+                state.particle_q,
+                state.particle_qd,
+                model.particle_q,
+                model.particle_mass,
+                model.particle_inv_mass,
+                model.particle_flags,
+                vbd_attrs.cut_force,
+                vbd_attrs.suture_grip,
+                vbd_attrs.suture_mu,
+                vbd_attrs.suture_puncture_force,
+                vbd_attrs.suture_puncture_cos,
+                vbd_attrs.suture_stiffness,
+                model.particle_contact_gate,
+                self._cut_particle_wound,
+                self._cut_pool_taken,
+                self._cut_overflow,
+                self._cut_particle_dirty,
+                self._cut_particle_new,
+            ],
+            device=device,
+        )
+        wp.launch(
+            kernel=compute_start_gap_offset,
+            dim=model.particle_count,
+            inputs=[
+                due,
+                self._cut_start_gap,
+                1 if self.cut_gap_direction == "normal_sum" else 0,
+                self._cut_idle_tet,
+                self.particle_adjacency,
+                tets,
+                self._tet_neighbors,
+                state.particle_q,
+                self._cut_particle_new,
+            ],
+            outputs=[self._cut_offset, self._cut_unsafe],
+            device=device,
+        )
+        wp.launch(
+            kernel=apply_start_gap_offset,
+            dim=model.particle_count,
+            inputs=[due, self._cut_particle_new, self._cut_offset],
+            outputs=[state.particle_q],
+            device=device,
+        )
+        wp.launch(
+            kernel=take_surface_rows,
+            dim=4 * tet_count,
+            inputs=[
+                due,
+                1 if self.cut_surface_edges else 0,
+                self._cut_max_tets_per_vertex,
+                int(capacity["color_count"]),
+                int(capacity["tri_spare_start"]),
+                int(capacity["tri_spare_count"]),
+                int(capacity["edge_spare_start"]),
+                int(capacity["edge_spare_count"]),
+                self._cut_update_number,
+                tets,
+                self._tet_neighbors,
+                self._cut_face_stamp,
+            ],
+            outputs=[
+                self._cut_tri_taken,
+                self._cut_edge_taken,
+                self._cut_overflow,
+                self._cut_tri_source,
+                self._cut_edge_source,
+                self._cut_tet_face_row,
+                self._cut_tet_edge_row,
+            ],
+            device=device,
+        )
+        if model.tri_count > 0:
+            wp.launch(
+                kernel=refresh_triangle_rows,
+                dim=model.tri_count,
+                inputs=[
+                    due,
+                    int(capacity["tri_spare_start"]),
+                    model.cut_row_park_particle,
+                    self._cut_tri_source,
+                    tets,
+                    self._tet_neighbors,
+                    self._cut_tet_face_row,
+                ],
+                outputs=[model.tri_indices],
+                device=device,
+            )
+        if model.edge_count > 0:
+            wp.launch(
+                kernel=refresh_edge_rows,
+                dim=model.edge_count,
+                inputs=[due, self._cut_edge_source, tets],
+                outputs=[model.edge_indices],
+                device=device,
+            )
+
+    def cut_report(self) -> dict:
+        """Read the cut counters on the host.
+
+        .. experimental::
+
+            Cutting is experimental; the keys of this report can change.
+
+        Do not call this inside a captured graph: it reads device arrays back.
+
+        Returns:
+            An empty dict for a model without cut capacity. Otherwise a dict with:
+            ``cut_faces`` (number of cut tet faces), ``copies_per_pool`` (copies made from the spare
+            particles of each original particle color), ``triangle_rows_taken`` and ``edge_rows_taken``
+            (spare surface rows in use), ``overflow`` (failed takes: one entry per pool, then triangle
+            rows, then edge rows), ``unsafe`` (new particles whose start gap direction could not open
+            every cut face at them), ``blade_force`` (blade force of the last cut update [N], per
+            blade) and ``updates`` (number of cut updates so far).
+        """
+        if not self._cut_has_capacity:
+            return {}
+        capacity = self.model.cut_capacity
+        stamps = self._cut_face_stamp.numpy()
+        return {
+            "cut_faces": int((stamps >= 0).sum()) // 2,
+            "copies_per_pool": np.minimum(self._cut_pool_taken.numpy(), int(capacity["spare_count"])).tolist(),
+            "triangle_rows_taken": min(int(self._cut_tri_taken.numpy()[0]), int(capacity["tri_spare_count"])),
+            "edge_rows_taken": min(int(self._cut_edge_taken.numpy()[0]), int(capacity["edge_spare_count"])),
+            "overflow": self._cut_overflow.numpy().tolist(),
+            "unsafe": int(self._cut_unsafe.numpy()[0]),
+            "blade_force": self._cut_blade_force.numpy().tolist(),
+            "updates": int(self._cut_update_number.numpy()[0]),
+        }
+
     def _init_suture_system(
         self,
         model: Model,
@@ -3532,17 +4315,24 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         tet_indices = (
             model.tet_indices.numpy().reshape(-1, 4) if model.tet_count > 0 else np.zeros((0, 4), dtype=np.int32)
         )
-        self._suture_tet_neighbors = wp.array(
-            build_tet_neighbors(tet_indices).reshape(-1, 4), dtype=wp.int32, device=device
-        )
+        # One tet-neighbor table for the suture and the cut: a cut face is a boundary for the tet walk.
+        if self._tet_neighbors is None:
+            self._tet_neighbors = wp.array(
+                build_tet_neighbors(tet_indices).reshape(-1, 4), dtype=wp.int32, device=device
+            )
+        self._suture_tet_neighbors = self._tet_neighbors
 
         # Tunnel point spacing: half the mean tet edge length, clamped to [0.5 mm, 2 mm]. A model without
         # tets cannot open a tunnel; it keeps the lower clamp as a placeholder.
         if point_spacing is None:
             if model.tet_count > 0:
                 q = model.particle_q.numpy()
+                # The idle tet of a cut capacity is not tissue; its edges have the parking spacing.
+                tissue_tets = (
+                    np.delete(tet_indices, self._cut_idle_tet, axis=0) if self._cut_idle_tet >= 0 else tet_indices
+                )
                 edges = np.concatenate(
-                    [np.linalg.norm(q[tet_indices[:, a]] - q[tet_indices[:, b]], axis=1) for a, b in _TET_EDGE_PAIRS]
+                    [np.linalg.norm(q[tissue_tets[:, a]] - q[tissue_tets[:, b]], axis=1) for a, b in _TET_EDGE_PAIRS]
                 )
                 self._suture_point_spacing = float(np.clip(0.5 * float(edges.mean()), 0.5e-3, 2.0e-3))
             else:
@@ -3831,6 +4621,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._suture_needle_tip_force,
                 self._suture_needle_tip_record_key,
                 self._suture_point_overflow,
+                self._cut_idle_tet,
             ],
             device=self.device,
         )
@@ -3850,6 +4641,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._suture_needle_state,
                 self._suture_needle_tunnel,
                 self._suture_gate_radius_wp,
+                CUT_GATE_BIT if self._cut_has_capacity else 0,
             ],
             outputs=[model.particle_contact_gate],
             device=self.device,

@@ -863,6 +863,13 @@ add_example_test(
 )
 add_example_test(
     TestClothExamples,
+    name="vbd.example_vbd_cut_suture",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 1260, "stitches": 1},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
     name="vbd.example_cloth_stiff_material_hanging",
     devices=cuda_test_devices,
     test_options={"usd_required": True, "num-frames": 360},

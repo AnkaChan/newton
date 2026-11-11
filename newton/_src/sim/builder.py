@@ -2124,6 +2124,9 @@ class ModelBuilder:
         """Rod segment rest lengths [m] accumulated for :attr:`Model.suture_segment_rest_length`."""
         self.shape_contact_gate: dict[int, int] = {}
         """Gate bits per shape index, finalized into :attr:`Model.shape_contact_gate`."""
+        # Cutting (experimental): blades and the pre-allocated cut capacity. A dict, not builder
+        # lists: a builder with cut data cannot be merged (see :meth:`add_cut_capacity`).
+        self._cut: dict[str, Any] = {"blade_body": [], "blade_edge_shape": [], "blade_direction": [], "capacity": None}
 
         # springs
         self.spring_indices: list[int] = []
@@ -3868,6 +3871,11 @@ class ModelBuilder:
     ) -> None:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
+        for other in (self, builder):
+            if other._cut["capacity"] is not None or other._cut["blade_body"]:
+                raise NotImplementedError(
+                    "A builder with a cut blade or cut capacity cannot be merged with add_builder() or replicate()"
+                )
 
         copy_count = len(worlds)
         if len(xforms) != copy_count or len(label_prefixes) != copy_count:
@@ -11509,6 +11517,221 @@ class ModelBuilder:
                     gate[shape] = gate.get(shape, 0) | (1 << i)
         self.shape_contact_gate = gate
 
+    def add_cut_blade(
+        self,
+        blade_body: int,
+        edge_shape: int,
+        *,
+        cut_direction: Vec3,
+        label: str | None = None,
+    ) -> int:
+        """Adds a cut blade: a rigid body whose capsule edge can cut tet soft bodies.
+
+        .. experimental::
+
+            Cutting is experimental and can change without a deprecation period.
+
+        :class:`~newton.solvers.SolverVBD` sums the contact force of the edge shape along the
+        cutting direction. When that blade force reaches the tissue value ``vbd.cut_force``, the
+        solver splits the tissue along existing tet faces near the blade plane, with copies from
+        the capacity that :meth:`add_cut_capacity` pre-allocates.
+
+        The blade edge is the axis segment of the capsule. The blade plane holds the edge and the
+        cutting direction.
+
+        Args:
+            blade_body: Index of the dynamic rigid body that carries the blade shapes.
+            edge_shape: Index of a capsule shape of ``blade_body``; its axis is the blade edge.
+            cut_direction: Cutting direction in the body frame, from the blade body out through
+                the blade edge. Its part along the capsule axis is removed.
+            label: Optional label; unused for now, kept for symmetry with other helpers.
+
+        Returns:
+            Index of the cut blade.
+
+        Raises:
+            IndexError: If ``blade_body`` or ``edge_shape`` is out of range, or ``edge_shape``
+                does not belong to ``blade_body``.
+            ValueError: If ``edge_shape`` is not a capsule, already belongs to a blade, or
+                ``cut_direction`` is not finite or is parallel to the capsule axis.
+        """
+        if blade_body < 0 or blade_body >= self.body_count:
+            raise IndexError(f"Blade body index {blade_body} is out of range for {self.body_count} bodies")
+        if edge_shape < 0 or edge_shape >= self.shape_count:
+            raise IndexError(f"Edge shape index {edge_shape} is out of range for {self.shape_count} shapes")
+        if self.shape_body[edge_shape] != blade_body:
+            raise IndexError(f"Edge shape {edge_shape} belongs to body {self.shape_body[edge_shape]}, not {blade_body}")
+        if self.shape_type[edge_shape] != GeoType.CAPSULE:
+            raise ValueError("The edge shape of a cut blade must be a capsule")
+        if edge_shape in self._cut["blade_edge_shape"]:
+            raise ValueError(f"Edge shape {edge_shape} already belongs to a cut blade")
+        direction = wp.vec3(*[float(c) for c in cut_direction])
+        if not all(math.isfinite(c) for c in direction):
+            raise ValueError(f"cut_direction must be finite, got {tuple(direction)}")
+        axis = wp.normalize(wp.transform_vector(self.shape_transform[edge_shape], wp.vec3(0.0, 0.0, 1.0)))
+        direction = direction - wp.dot(direction, axis) * axis
+        if wp.length(direction) <= 1.0e-9:
+            raise ValueError("cut_direction must not be parallel to the capsule axis of the edge shape")
+        blade = len(self._cut["blade_body"])
+        self._cut["blade_body"].append(int(blade_body))
+        self._cut["blade_edge_shape"].append(int(edge_shape))
+        self._cut["blade_direction"].append(wp.normalize(direction))
+        return blade
+
+    def add_cut_capacity(
+        self,
+        *,
+        max_vertices: int = 32,
+        max_faces: int = 128,
+        max_edges: int | None = None,
+        park_position: Vec3,
+        park_spacing: float,
+        particle_radius: float,
+        copy_colors: bool = True,
+    ) -> None:
+        """Pre-allocates what a cut needs: spare particles, spare surface rows and copy colors.
+
+        .. experimental::
+
+            Cutting is experimental and can change without a deprecation period.
+
+        Call this once, after :meth:`color` or :meth:`set_coloring` and as the last builder call
+        before :meth:`finalize`. No array size changes after ``finalize``; a cut only edits array
+        contents.
+
+        The call appends:
+
+        - ``max_vertices`` spare particles per particle color. A spare is inactive and has zero
+          mass until a cut makes it the copy of a cut vertex. With ``copy_colors`` the spares of
+          color ``c`` form the copy color group ``C + c`` (``C`` is the number of colors).
+        - ``2 * max_faces`` spare triangle rows and ``max_edges`` spare edge rows of the collision
+          surface, each on its own inactive parking particle.
+        - one idle tet with zero stiffness on four parking particles; unused vertex-to-tet records
+          point at it.
+
+        All new particles sit on the parking lattice: a cubic lattice with ``park_spacing`` that
+        starts at ``park_position``. Keep it away from the tissue and from every tool path, by more
+        than the contact detection distances: self contact and box or capsule contact also see
+        inactive particles.
+
+        Args:
+            max_vertices: Spare particles per particle color.
+            max_faces: Cut faces in the whole run; each needs two spare triangle rows.
+            max_edges: Spare edge rows. ``None`` means ``3 * max_faces``.
+            park_position: World position of the first parking place [m].
+            park_spacing: Distance between two parking places [m].
+            particle_radius: Radius of every spare and parking particle [m]; use the radius of
+                the tissue particles that can be cut.
+            copy_colors: If ``True``, copies get their own color groups. If ``False``, a spare
+                sits in the color group of the vertices it can copy.
+
+        Raises:
+            RuntimeError: If the builder has no particle coloring yet, or already has cut capacity.
+            ValueError: If a capacity is not positive, or ``park_spacing`` or ``particle_radius``
+                is not positive.
+        """
+        if self._cut["capacity"] is not None:
+            raise RuntimeError("add_cut_capacity() can be called only once")
+        if len(self.particle_color_groups) == 0:
+            raise RuntimeError("Call color() or set_coloring() before add_cut_capacity()")
+        if max_edges is None:
+            max_edges = 3 * max_faces
+        if max_vertices < 1 or max_faces < 1 or max_edges < 0:
+            raise ValueError("Cut capacities must be positive")
+        if not (park_spacing > 0.0) or not (particle_radius > 0.0):
+            raise ValueError("park_spacing and particle_radius must be positive")
+
+        color_count = len(self.particle_color_groups)
+        groups = [[int(i) for i in group] for group in self.particle_color_groups]
+        if copy_colors:
+            groups.extend([] for _ in range(color_count))
+
+        place_count = color_count * max_vertices + 2 * max_faces + max_edges
+        side = max(1, round(place_count ** (1.0 / 3.0)))
+        while side**3 < place_count:
+            side += 1
+        origin = wp.vec3(*[float(c) for c in park_position])
+
+        def lattice_point(ix: int, iy: int, iz: int) -> wp.vec3:
+            return origin + float(park_spacing) * wp.vec3(float(ix), float(iy), float(iz))
+
+        def park_place(k: int) -> wp.vec3:
+            return lattice_point(k % side, (k // side) % side, k // (side * side))
+
+        def add_parked(pos: wp.vec3) -> int:
+            return self.add_particle(pos, wp.vec3(0.0), 0.0, radius=particle_radius, flags=0)
+
+        particle_start = self.particle_count
+        place = 0
+        spare_start = []
+        for color in range(color_count):
+            for i in range(max_vertices):
+                spare = add_parked(park_place(place))
+                place += 1
+                if i == 0:
+                    spare_start.append(spare)
+                groups[color_count + color if copy_colors else color].append(spare)
+
+        # Parking particles never move; they share the last color group so that every particle has a color.
+        last = len(groups) - 1
+        row_park_particle = []
+        tri_spare_start = len(self.tri_indices)
+        # Spare rows take the look of the last triangle row, so the model keeps one triangle appearance
+        # and the viewer can follow the rewritten rows.
+        if self.tri_color:
+            tri_color = self.tri_color[-1]
+            tri_opacity = self.tri_opacity[-1]
+        else:
+            tri_color = _validate_color(self._DEFAULT_TRI_COLOR, "Triangle color")
+            tri_opacity = 1.0
+        for _ in range(2 * max_faces):
+            p = add_parked(park_place(place))
+            place += 1
+            # add_triangle() drops a triangle with zero area, so the row is written directly.
+            self.tri_indices.append((p, p, p))
+            self.tri_poses.append([[1.0, 0.0], [0.0, 1.0]])
+            self.tri_activations.append(0.0)
+            self.tri_materials.append((0.0, 0.0, 0.0, 0.0, 0.0))
+            self.tri_areas.append(0.0)
+            self.tri_color.append(tri_color)
+            self.tri_opacity.append(tri_opacity)
+            row_park_particle.append(p)
+            groups[last].append(p)
+        edge_spare_start = len(self.edge_indices)
+        for _ in range(max_edges):
+            p = add_parked(park_place(place))
+            place += 1
+            self.add_edge(-1, -1, p, p, rest=0.0, edge_ke=0.0, edge_kd=0.0)
+            row_park_particle.append(p)
+            groups[last].append(p)
+
+        idle_particles = [
+            add_parked(lattice_point(side + dx, dy, dz)) for dx, dy, dz in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1))
+        ]
+        groups[last].extend(idle_particles)
+        tet_count_before = len(self.tet_indices)
+        self.add_tetrahedron(*idle_particles, k_mu=0.0, k_lambda=0.0, k_damp=0.0)
+        if len(self.tet_indices) != tet_count_before + 1:
+            raise RuntimeError("The idle tet of the cut capacity has no positive volume")
+
+        self.particle_color_groups = [np.array(group, dtype=int) for group in groups]
+        self._cut["capacity"] = {
+            "color_count": color_count,
+            "copy_colors": bool(copy_colors),
+            "spare_start": spare_start,
+            "spare_count": int(max_vertices),
+            "tri_spare_start": tri_spare_start,
+            "tri_spare_count": 2 * int(max_faces),
+            "edge_spare_start": edge_spare_start,
+            "edge_spare_count": int(max_edges),
+            "row_park_particle": row_park_particle,
+            "idle_tet": tet_count_before,
+            "particle_start": particle_start,
+            "particle_end": self.particle_count,
+            "park_lower": tuple(origin),
+            "park_upper": tuple(lattice_point(side + 1, side - 1, side - 1)),
+        }
+
     def add_spring(
         self,
         i: int,
@@ -13305,6 +13528,8 @@ class ModelBuilder:
             particle_color_groups: A list of list or `np.array` with `dtype`=`int`. The length of the list is the number of colors
                 and each list or `np.array` contains the indices of vertices with this color.
         """
+        if self._cut["capacity"] is not None:
+            raise RuntimeError("set_coloring() cannot be called after add_cut_capacity()")
         particle_color_groups = [
             color_group if isinstance(color_group, np.ndarray) else np.array(color_group)
             for color_group in particle_color_groups
@@ -13357,6 +13582,8 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
+        if self._cut["capacity"] is not None:
+            raise RuntimeError("color() cannot be called after add_cut_capacity()")
         if self.particle_count != 0:
             tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
             tri_materials = np.array(self.tri_materials)
@@ -16152,6 +16379,23 @@ class ModelBuilder:
                 shape_gate[shape] = bits
             m.shape_contact_gate = wp.array(shape_gate, dtype=wp.int32)
             m.particle_contact_gate = wp.zeros(self.particle_count, dtype=wp.int32)
+
+            # ---------------------
+            # cut blades and cut capacity
+
+            m.cut_blade_count = len(self._cut["blade_body"])
+            m.cut_blade_body = _to_wp_array(self._cut["blade_body"], wp.int32, requires_grad=False)
+            m.cut_blade_edge_shape = _to_wp_array(self._cut["blade_edge_shape"], wp.int32, requires_grad=False)
+            m.cut_blade_direction = _to_wp_array(self._cut["blade_direction"], wp.vec3, requires_grad=False)
+            cut_capacity = self._cut["capacity"]
+            if cut_capacity is not None:
+                m.cut_capacity = {
+                    key: value for key, value in cut_capacity.items() if key not in ("spare_start", "row_park_particle")
+                }
+                m.cut_spare_start = wp.array(np.asarray(cut_capacity["spare_start"], dtype=np.int32), dtype=wp.int32)
+                m.cut_row_park_particle = wp.array(
+                    np.asarray(cut_capacity["row_park_particle"], dtype=np.int32), dtype=wp.int32
+                )
 
             # ---------------------
             # triangles

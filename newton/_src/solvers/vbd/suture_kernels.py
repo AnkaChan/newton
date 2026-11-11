@@ -829,8 +829,13 @@ def update_suture_needle_state(
     tip_force: wp.array[float],
     tip_record_key: wp.array[wp.int64],
     overflow: wp.array[wp.int32],
+    idle_tet: int,
 ):
-    """One thread per needle: puncture, tet walk, point creation and removal, exit and finish."""
+    """One thread per needle: puncture, tet walk, point creation and removal, exit and finish.
+
+    ``idle_tet`` is the tet that fills unused vertex-to-tet records of a model with cut capacity
+    (-1 otherwise); the entry search skips it.
+    """
     if due[0] == 0:
         return
     n = wp.tid()
@@ -867,6 +872,8 @@ def update_suture_needle_state(
             best_bary = wp.vec4(0.0)
             for k in range(get_vertex_num_adjacent_tets(adjacency, particle)):
                 tet, _order = get_vertex_adjacent_tet_id_order(adjacency, particle, k)
+                if tet == idle_tet:
+                    continue
                 b = _tet_barycentric(tet, tet_indices, particle_q, tip)
                 m = _bary_min(b)
                 if m > best_min:
@@ -1024,9 +1031,13 @@ def update_suture_gate(
     needle_state: wp.array[wp.int32],
     needle_tunnel: wp.array[wp.int32],
     gate_radius: wp.array[wp.float32],
+    keep_mask: int,
     particle_gate: wp.array[wp.int32],
 ):
-    """One thread per particle: the gate bit of every needle whose tunnel polyline passes within the gate radius."""
+    """One thread per particle: the gate bit of every needle whose tunnel polyline passes within the gate radius.
+
+    Bits in ``keep_mask`` belong to another feature (the cut) and are kept as they are.
+    """
     if due[0] == 0:
         return
     p = wp.tid()
@@ -1063,4 +1074,4 @@ def update_suture_gate(
                     hit = True
         if hit:
             bits |= rod.needle_group[n]
-    particle_gate[p] = bits
+    particle_gate[p] = bits | (particle_gate[p] & keep_mask)

@@ -1002,6 +1002,110 @@ opens the upper jaw of the right gripper and pulls the needle away so that the
 thread draws the right block along the lower jaw until the wound edges meet,
 then withdraws that jaw so the block hangs from the stitches.
 
+.. _vbd-cutting:
+
+Cutting
+~~~~~~~
+
+.. experimental::
+
+   Cutting is experimental. The arguments and the rule that advances the cut
+   can still change without a deprecation period.
+
+A cut blade (:meth:`~newton.ModelBuilder.add_cut_blade`) cuts a tetrahedral
+soft body along its existing tet faces. No tet is added, removed or reshaped.
+A vertex on the cut keeps its particle for the tets on one side; the tets on
+each other side get a *copy*, a spare particle that exists from the start.
+The surface triangles and edges that collide are rewritten in place from the
+tet corners, and each new wound face takes spare rows. All array sizes are
+fixed at :meth:`~newton.ModelBuilder.finalize`, and the cut runs as the last
+kernels of :meth:`~newton.solvers.SolverVBD.step` with fixed launch sizes, so a
+frame with a cut can be one captured CUDA graph.
+
+**Authoring.** Call ``SolverVBD.register_custom_attributes(builder)`` before
+adding particles. Build the tissue with :meth:`~newton.ModelBuilder.add_soft_grid`
+or :meth:`~newton.ModelBuilder.add_soft_mesh` (surface triangles and edges with
+zero stiffness). The blade is a dynamic rigid body with a capsule shape whose
+axis is the blade edge; drive it from a kinematic holder through a D6 joint, as
+the suture needle. Then:
+
+.. code-block:: python
+
+    blade = builder.add_cut_blade(blade_body, edge_shape, cut_direction=(0.0, 0.0, -1.0))
+    builder.color()
+    builder.add_cut_capacity(
+        max_vertices=32,  # spare particles per particle color
+        max_faces=128,  # cut faces in the whole run
+        park_position=(0.0, 0.06, -0.06),  # away from the tissue and from every tool path
+        park_spacing=3.0e-3,
+        particle_radius=5.0e-4,  # the radius of the tissue particles
+    )
+    model = builder.finalize()
+    model.vbd.cut_force.fill_(0.5)  # [N]; infinite (the default) marks tissue that cannot be cut
+
+:meth:`~newton.ModelBuilder.add_cut_capacity` must be the last builder call.
+It appends the spare particles, the spare surface rows on inactive *parking
+particles*, one *idle tet* with zero stiffness, and one *copy color* group per
+particle color, so that the two wound faces never share a Gauss-Seidel color
+pass. A builder with cut capacity cannot be colored again or merged.
+
+The solver needs a :class:`~newton.CollisionPipeline` with
+``enable_rigid_soft_full_surface_contact=True``, ``rigid_soft_enable_dat=True``,
+``particle_enable_self_contact=True`` with a margin and a gap,
+``particle_topological_contact_filter_threshold=1`` and a
+``particle_edge_parallel_epsilon`` below the squared shortest tet edge. The
+constructor checks these settings.
+
+**Blade force and cut advance.** At the end of every ``cut_update_interval``-th
+substep the solver sums the normal contact force of the blade edge, taken along
+the cutting direction. When this *blade force* reaches ``vbd.cut_force`` at the
+strongest contact (or at the first contact with force when ``cut_armed=True``),
+every uncut tet face that has a *pressed* vertex and whose two tets lie on
+different sides of the blade plane is cut: one tet row. A vertex is pressed
+when it is within the contact range of the blade edge
+(``cut_contact_range``).
+
+After the first row the wound is one start gap wide, which is narrower than
+the blade edge plus the particle radius. The blade then rests on the two wound
+lips and does not reach the cut front. Two switches change what happens next:
+
+- ``cut_gate_wound=True``: the blade has no contact with the split vertices and
+  their copies (it uses the contact gate of the suture feature). The blade goes
+  down to the cut front, and the cut follows the blade edge row by row.
+- ``cut_press_wound=True``: the wound particles under the blade edge count as
+  pressed. Every cut update with enough blade force cuts the next row from the
+  cut front, so the cut runs ahead of the blade.
+
+With both off, the cut goes on only where the pressed tissue deforms enough to
+bring a vertex of the cut front into the contact range.
+
+**Start gap.** Right after a split the original and its copy move
+``cut_start_gap`` apart (default: the self-contact margin), each into its own
+material, because two coincident faces get no contact force. The direction is
+the one that opens all cut faces at the particle as much as possible
+(``cut_gap_direction``).
+
+**Capacity.** Capacities hold for the whole run. When a pool of spare
+particles or the spare rows run out, the vertex stays shared and a counter
+grows. :meth:`~newton.solvers.SolverVBD.cut_report` reads the counters on the host (not inside
+a captured graph). A particle that is pinned, inactive or held by a
+particle-body attachment is never split.
+
+**Reset.** :meth:`~newton.solvers.SolverVBD.reset` with particle positions
+selected undoes every cut for the whole model.
+
+**Limits.** One world, one blade, and tool shapes that are boxes or capsules.
+The cut follows tet faces, so a blade that is not on a mesh plane gives a
+stepped wound. The tissue has collision rows only on its surface: below the
+skin the blade meets particles, not faces. Warp deterministic modes are not
+supported. Do not cut after a suture needle has opened a tunnel. A cuttable
+particle must not be the end of a spring. Blades and the cut capacity are
+builder calls only; they have no USD schema yet (deferred).
+
+Example: :doc:`vbd_cut_suture </examples>` cuts one elastic cuboid in two with
+a blade, pulls the halves 4 mm apart and sews the wound with the running
+suture of ``vbd_suture``.
+
 Examples
 --------
 
