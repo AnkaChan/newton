@@ -1,0 +1,19 @@
+Warp CUDA error 100: no CUDA-capable device is detected (in function init_cuda_driver, /builds/omniverse/warp/warp/native/cuda_util.cpp:333)
+newton: /home/horde/Code/Graphics/newton-working-copies/vbd-fast-cut-design/newton/__init__.py
+warp: 1.19.0
+Warp 1.19.0 initialized:
+   CUDA Toolkit 12.9, CUDA driver not available (NVRTC compilation available)
+   Devices:
+     "cpu"      : "x86_64"
+   Kernel cache:
+     /home/horde/.cache/warp/1.19.0
+particles 1595 tets 5600 tris 1728 edges 2592
+Module warp._src.coloring 5014867 load on device 'cpu' took 1.73 ms  (cached)
+color() default: 4 colors, sizes [410, 402, 390, 393]
+  vertices on the plane x = 14 cells: 55; per color [18, 10, 12, 15]
+  largest per-color count on any interior x plane: 18
+  tets with fewer than four colors: 0
+color() balance off: 4 colors, sizes [410, 402, 390, 393]
+  vertices on the plane x = 14 cells: 55; per color [18, 10, 12, 15]
+  largest per-color count on any interior x plane: 18
+  tets with fewer than four colors: 0
